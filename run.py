@@ -24,17 +24,17 @@ def apt_menu():
         if choice == "1":
             subprocess.run(["sudo", "apt", "update"])
         elif choice == "2":
-            subprocess.run(["sudo", "apt", "upgrade", "-y"])
+            subprocess.run(["sudo", "apt", "upgrade"])
         elif choice == "3":
-            subprocess.run(["sudo", "apt", "autoremove", "-y"])
+            subprocess.run(["sudo", "apt", "autoremove"])
         elif choice == "4":
             subprocess.run(["sudo", "apt", "install", "timeshift"])
         elif choice == "5":
-            subprocess.run(["sudo", " apt", "install", "btop", "htop"])
+            subprocess.run(["sudo", "apt", "install", "btop", "htop"])
         elif choice == "6":
             subprocess.run(["sudo", "apt", "install", "zsh"])
         elif choice == "7":
-            set.__reduce__(["sudo", "apt", "install", "rsync"])
+            subprocess.run(["sudo", "apt", "install", "rsync"])
         elif choice == "0":
             break
         else:
@@ -98,6 +98,8 @@ def main():
             break
         else:
             print("Invalid selection")
+
+
 
 if __name__ == "__main__":
     main()
