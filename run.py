@@ -1,11 +1,34 @@
 import subprocess
 import platform
+import shutil
+
+DRY_RUN = False
+
+
+def run(cmd):
+    if DRY_RUN:
+        print("DRY RUN:", " ".join(cmd))
+    else:
+        subprocess.run(cmd)
+
+
+def pause():
+    input("\nPress Enter to continue...")
+
+
+def detect_package_manager():
+    if shutil.which("apt"):
+        return "apt"
+    elif shutil.which("dnf"):
+        return "dnf"
+    return None
+
 
 def show_system_info():
     print("OS:", platform.system())
     if platform.system() == "Linux":
-        subprocess.run(["uname", "-a"])
-        subprocess.run(["cat", "/etc/os-release"])
+        run(["uname", "-a"])
+        run(["cat", "/etc/os-release"])
 
 
 def apt_menu():
@@ -20,36 +43,47 @@ def apt_menu():
         print("7) Install rsync")
         print("8) Install DNS tools")
         print("9) Install Apache2")
-        print("10) Install Dev Tools")
+        print("10) Install Clone Tools")
         print("11) Install Remote Access")
+        print("12) Install DHCP Server")
+        print("13) Install Firewall")
+        print("14) Install Samba")
         print("0) Return to Main Menu")
 
         choice = input("Choose an option: ")
 
         if choice == "1":
-            subprocess.run(["sudo", "apt", "update"])
+            run(["sudo", "apt", "update"])
         elif choice == "2":
-            subprocess.run(["sudo", "apt", "upgrade"])
+            run(["sudo", "apt", "upgrade", "-y"])
         elif choice == "3":
-            subprocess.run(["sudo", "apt", "autoremove"])
+            run(["sudo", "apt", "autoremove", "-y"])
         elif choice == "4":
-            subprocess.run(["sudo", "apt", "install", "timeshift"])
+            run(["sudo", "apt", "install", "-y", "timeshift"])
         elif choice == "5":
-            subprocess.run(["sudo", "apt", "install", "btop", "htop"])
+            run(["sudo", "apt", "install", "-y", "btop", "htop"])
         elif choice == "6":
-            subprocess.run(["sudo", "apt", "install", "zsh"])
+            run(["sudo", "apt", "install", "-y", "zsh"])
         elif choice == "7":
-            subprocess.run(["sudo", "apt", "install", "rsync"])
+            run(["sudo", "apt", "install", "-y", "rsync"])
         elif choice == "8":
-            subprocess.run(["sudo", "apt", "install", "bind9", "bind9utils", "bind9-doc"])
+            run(["sudo", "apt", "install", "-y", "bind9", "bind9utils", "bind9-doc"])
         elif choice == "10":
-            subprocess.run(["sudo", "apt", "install", "git", "wget", "curl", "pip"])
+            run(["sudo", "apt", "install", "-y", "git", "wget", "curl", "pip"])
         elif choice == "11":
-            subprocess.run(["sudo", "apt", "install", "ssh"])
+            run(["sudo", "apt", "install", "-y", "ssh"])
+        elif choice == "12":
+            run(["sudo", "apt", "install", "-y", "isc-dhcp-server"])
+        elif choice == "13":
+            run(["sudo", "apt", "install", "-y", "firewalld"])
+        elif choice == "14":
+            run(["sudo", "apt", "install", "-y", "samba"])
         elif choice == "0":
             break
         else:
             print("Invalid choice")
+
+        pause()
 
 
 def dnf_menu():
@@ -68,66 +102,120 @@ def dnf_menu():
         choice = input("Choose an option: ")
 
         if choice == "1":
-            subprocess.run(["dnf", "upgrade"])
+            run(["sudo", "dnf", "upgrade", "-y"])
         elif choice == "2":
-            subprocess.run(["dnf", "clean", "all"])
+            run(["sudo", "dnf", "clean", "all"])
         elif choice == "3":
-            subprocess.run(["dnf", "autoremove", "-y"])
+            run(["sudo", "dnf", "autoremove", "-y"])
         elif choice == "4":
-            subprocess.run(["dnf", "in", "timeshift"])
+            run(["sudo", "dnf", "install", "-y", "timeshift"])
         elif choice == "5":
-            subprocess.run(["dnf", "in", "btop", "htop"])
+            run(["sudo", "dnf", "install", "-y", "btop", "htop"])
         elif choice == "6":
-            subprocess.run(["dnf", "in", "zsh"])
+            run(["sudo", "dnf", "install", "-y", "zsh"])
         elif choice == "7":
-            subprocess.run(["dnf", "in", "pip", "npm", "git", "wget", "curl"])
+            run(["sudo", "dnf", "install", "-y", "pip", "npm", "git", "wget", "curl"])
         elif choice == "8":
-            subprocess.run(["dnf", "upgrade", "--refresh", "akmod-nvidia", "xorg-x11-drv-nvidia"])
+            run([
+                "sudo", "dnf", "upgrade", "--refresh",
+                "-y", "akmod-nvidia", "xorg-x11-drv-nvidia"
+            ])
         elif choice == "0":
             break
 
+        pause()
 
-# 🔧 MOVED HERE (this is the fix)
+
 def run_tools_menu():
-    print("1) Btop")
-    print("2) Htop")
-    print("3) Systemctl Status")
-    print("4) Check Apache2 Status")
-    print("5) Start Apache2 Service")
-    print("0) Return TO Main Menu")
+    while True:
+        print("\nRun Tools:")
+        print("1) Btop")
+        print("2) Htop")
+        print("3) Systemctl Status")
+        print("4) Disable Apache2 Service")
+        print("5) Check Apache2 Status")
+        print("6) Start Apache2 Service")
+        print("7) Stop Apache2 Service")
+        print("8) Disable Firewalld Service")
+        print("9) Check Firewalld Status")
+        print("10) Start Firewalld Service")
+        print("11) Stop Firewalld Service")
+        print("12) Disable Samba Service")
+        print("13) Check Samba Status")
+        print("14) Start Samba Service")
+        print("15) Stop Samba Service")
+        print("0) Return To Main Menu")
 
-    choice = input("Choose an option: ")
+        choice = input("Choose an option: ")
 
-    if choice == "1":
-        subprocess.run(["btop"])
-    elif choice == "2":
-        subprocess.run(["htop"])
-    elif choice == "3":
-        subprocess.run(["systemctl", "status"])
-    elif choice == "4":
-        subprocess.run(["sudo", "systemctl", "status", "apache2"])
-    elif choice == "5":
-        subprocess.run(["sudo", "systemctl", "start", "apache2"])
+        if choice == "1":
+            run(["btop"])
+        elif choice == "2":
+            run(["htop"])
+        elif choice == "3":
+            run(["systemctl", "status"])
+        elif choice == "4":
+            run(["sudo", "systemctl", "disable", "apache2"])
+        elif choice == "5":
+            run(["sudo", "systemctl", "status", "apache2"])
+        elif choice == "6":
+            run(["sudo", "systemctl", "start", "apache2"])
+        elif choice == "7":
+            run(["sudo", "systemctl", "stop", "apache2"])
+        elif choice == "8":
+            run(["sudo", "systemctl", "disable", "firewalld"])
+        elif choice == "9":
+            run(["sudo", "systemctl", "status", "firewalld"])
+        elif choice == "10":
+            run(["sudo", "systemctl", "start", "firewalld"])
+        elif choice == "11":
+            run(["sudo", "systemctl", "stop", "firewalld"])
+        elif choice == "12":
+            run(["sudo", "systemctl", "disable", "smbd"])
+        elif choice == "13":
+            run(["sudo", "systemctl", "status", "smbd"])
+        elif choice == "14":
+            run(["sudo", "systemctl", "start", "smbd"])
+        elif choice == "15":
+            run(["sudo", "systemctl", "stop", "smbd"])
+        elif choice == "0":
+            break
+        else:
+            print("Invalid selection")
+
+        pause()
 
 
 def main():
+    if platform.system() != "Linux":
+        print("This tool only supports Linux.")
+        return
+
     show_system_info()
+
+    pkg_manager = detect_package_manager()
+    if not pkg_manager:
+        print("No supported package manager found (APT or DNF).")
+        return
+
+    print(f"\nDetected package manager: {pkg_manager.upper()}")
+
     while True:
-        print("\nSelect a Package Manager: ")
-        print("1) APT")
-        print("2) DNF")
-        print("3) Run Tools")
+        print("\nMain Menu:")
+        print("1) Package Manager")
+        print("2) Run Tools")
         print("q) Quit")
 
-        pkg = input("Select an option: ")
+        choice = input("Select an option: ")
 
-        if pkg == "1":
-            apt_menu()
-        elif pkg == "2":
-            dnf_menu()
-        elif pkg == "3":
+        if choice == "1":
+            if pkg_manager == "apt":
+                apt_menu()
+            elif pkg_manager == "dnf":
+                dnf_menu()
+        elif choice == "2":
             run_tools_menu()
-        elif pkg.lower() == "q":
+        elif choice.lower() == "q":
             print("Goodbye!")
             break
         else:
@@ -135,4 +223,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nExiting safely...")
