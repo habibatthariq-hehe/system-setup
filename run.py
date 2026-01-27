@@ -166,6 +166,7 @@ def run_tools_menu():
         print("29) Check Bind9 Status")
         print("30) Start Bind9 Service")
         print("31) Stop Bind9 Service")
+        print("32) Edit Network Interfaces")
         print("0) Return To Main Menu")
 
         choice = input("Choose an option: ")
@@ -232,6 +233,8 @@ def run_tools_menu():
             run(["sudo", "systemctl", "start", "bind9"])
         elif choice == "31":
             run(["sudo", "systemctl", "stop", "bind9"])
+        elif choice == "32":
+            run(["sudo", "nano", "/etc/network/interfaces"])
         elif choice == "0":
             break
         else:
