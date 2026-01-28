@@ -8,6 +8,6 @@ iface ens33 inet dhcp
 # LAN (Firewall)
 auto ens34
 iface ens34 inet static
-    address 192.168.10.1
-    netmask 255.255.255.0
+address 192.168.10.1
+netmask 255.255.255.0
 
