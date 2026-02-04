@@ -25,14 +25,17 @@ auto lo
 iface lo inet loopback
 
 auto ens33
+allow-hotplug ens33
 iface ens33 inet dhcp
 
 auto ens34
+allow-hotplug ens34
 iface ens34 inet static
     address 192.168.30.1
     netmask 255.255.255.0
 
 auto ens35
+allow-hotplug ens35
 iface ens35 inet static
     address 192.168.40.1
     netmask 255.255.255.0
@@ -164,6 +167,13 @@ firewall-cmd --permanent --zone=external \
 
 firewall-cmd --permanent --policy=dmz-to-lan \
   --add-rich-rule='rule family=ipv4 service name=dns accept'
+
+firewall-cmd --permanent --zone=dmz --add-service=smtp
+firewall-cmd --permanent --zone=dmz --add-service=imap
+firewall-cmd --permanent --zone=dmz --add-service=pop3
+firewall-cmd --reload
+
+
 
 firewall-cmd --reload
 
