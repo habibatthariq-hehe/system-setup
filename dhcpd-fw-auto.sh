@@ -8,7 +8,7 @@ echo "=== FW-SRV AUTOMATION START ==="
 ###################################
 echo "[0/9] Pre-check interface..."
 
-for i in ens33 ens34 ens35; do
+for i in ens33 ens37 ens38; do
   ip link show "$i" >/dev/null 2>&1 || {
     echo "ERROR: Interface $i not found"
     exit 1
@@ -28,15 +28,15 @@ auto ens33
 allow-hotplug ens33
 iface ens33 inet dhcp
 
-auto ens34
-allow-hotplug ens34
-iface ens34 inet static
+auto ens37
+allow-hotplug ens37
+iface ens37 inet static
     address 192.168.30.1
     netmask 255.255.255.0
 
-auto ens35
-allow-hotplug ens35
-iface ens35 inet static
+auto ens38
+allow-hotplug ens38
+iface ens38 inet static
     address 192.168.40.1
     netmask 255.255.255.0
 EOF
