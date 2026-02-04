@@ -7,7 +7,7 @@ apt update
 apt install -y sudo
 
 echo "=== Install dependencies ==="
-sudo apt install -y git wget curl zsh
+sudo apt install -y git wget curl zsh isc-dhcp-relay
 
 echo "=== Install Oh My Zsh ==="
 if [ ! -d "$HOME/.oh-my-zsh" ]; then

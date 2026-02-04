@@ -136,6 +136,10 @@ firewall-cmd --permanent --zone=external \
 firewall-cmd --permanent --policy=dmz-to-lan \
   --add-rich-rule='rule family=ipv4 service name=dns accept'
 
+firewall-cmd --permanent --zone=external --add-port=25/tcp
+firewall-cmd --permanent --zone=external --add-port=80/tcp
+firewall-cmd --permanent --zone=external --add-port=143/tcp
+
 firewall-cmd --permanent --zone=dmz --add-service=smtp
 firewall-cmd --permanent --zone=dmz --add-service=imap
 firewall-cmd --permanent --zone=dmz --add-service=pop3

@@ -1,7 +1,6 @@
 #!/bin/bash
 set -e
 
-
 ###################################
 # 1. INSTALL BIND9
 ###################################
@@ -107,3 +106,13 @@ systemctl restart bind9
 
 echo "=== BIND9 ZONE SETUP COMPLETE ==="
 systemctl status bind9 --no-pager
+
+echo "=== DHCP SERVER SETUP START ==="
+apt install isc-dhcp-server -y
+systemctl disable isc-dhcp-server
+cp /root/system-setup/dhcp.conf /etc/dhcp/dhcpd.conf
+nano /etc/default/isc-dhcp-server
+systemctl enable isc-dhcp-server
+systemctl start isc-dhcp-server
+echo "=== DHCP SERVER SETUP COMPLETE ==="
+systemctl status isc-dhcp-server --no-pager

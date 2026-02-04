@@ -1,5 +1,7 @@
 #!/bin/bash
 set -e
+echo "[0/4] Installing bind9..."
+apt install bind9 bind9utils dnsutils -y
 
 echo "=== BIND9 FORWARD ZONE (db.lks.id) SETUP START ==="
 
@@ -50,16 +52,10 @@ EOF
 ###################################
 # 3. VALIDATE ZONE
 ###################################
-echo "[3/4] Validating zone file..."
+echo "[3/3] Validating zone file..."
 
 named-checkzone lks.id /etc/bind/db.lks.id
 
-###################################
-# 4. RESTART BIND
-###################################
-echo "[4/4] Restarting bind9..."
-
-systemctl restart bind9
-
 echo "=== db.lks.id SETUP COMPLETE ==="
-systemctl status bind9 --no-pager
+echo "=== STARTING BIND INTERNAL SETUP ==="
+sh 2.bind-internal-auto.sh
