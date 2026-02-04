@@ -2,7 +2,7 @@
 set -e
 
 # ==============================
-# SET DEBUG=1 for live debug
+# SET DEBUG=1 untuk live debug
 # ==============================
 DEBUG=0
 

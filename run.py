@@ -71,11 +71,11 @@ def apt_menu():
         print("12) Install DNS tools")
         print("13) Install Apache2")
         print("14) Install Clone Tools")
-        print("14) Install Remote Access")
-        print("12) Install DHCP Server")
-        print("13) Install Firewall")
-        print("14) Install Samba")
-        print("15) Install nginx")
+        print("15) Install Remote Access")
+        print("16) Install DHCP Server")
+        print("17) Install Firewall")
+        print("18) Install Samba")
+        print("19) Install nginx")
         print("0) Return to Main Menu")
 
         choice = input("Choose an option: ")
@@ -172,61 +172,68 @@ def run_tools_menu():
         print("2) Htop")
         print("3) Systemctl Status (summary)")
 
+        print("---- systemd-networkd ----")
+        print("4) Disable systemd-networkd")
+        print("5) systemd-networkd Status")
+        print("6) Start systemd-networkd")
+        print("7) Stop systemd-networkd")
+        print("8) Enable systemd-networkd")
+
         print("---- Apache2 ----")
-        print("4) Disable Apache2")
-        print("5) Apache2 Status")
-        print("6) Start Apache2")
-        print("7) Stop Apache2")
-        print("8) Enable Apache2")
+        print("9) Disable Apache2")
+        print("10) Apache2 Status")
+        print("11) Start Apache2")
+        print("12) Stop Apache2")
+        print("13) Enable Apache2")
 
         print("---- Firewalld ----")
-        print("9) Disable Firewalld")
-        print("10) Firewalld Status")
-        print("11) Start Firewalld")
-        print("12) Stop Firewalld")
-        print("13) Enable Firewalld")
+        print("14) Disable Firewalld")
+        print("15) Firewalld Status")
+        print("16) Start Firewalld")
+        print("17) Stop Firewalld")
+        print("18) Enable Firewalld")
 
         print("---- Samba ----")
-        print("14) Disable Samba")
-        print("15) Samba Status")
-        print("16) Start Samba")
-        print("17) Stop Samba")
-        print("18) Enable Samba")
+        print("19) Disable Samba")
+        print("20) Samba Status")
+        print("21) Start Samba")
+        print("22) Stop Samba")
+        print("23) Enable Samba")
 
         print("---- Nginx ----")
-        print("19) Disable Nginx")
-        print("20) Nginx Status")
-        print("21) Start Nginx")
-        print("22) Stop Nginx")
-        print("23) Enable Nginx")
+        print("24) Disable Nginx")
+        print("25) Nginx Status")
+        print("26) Start Nginx")
+        print("27) Stop Nginx")
+        print("28) Enable Nginx")
 
         print("---- DHCP Server ----")
-        print("24) Disable DHCP Server")
-        print("25) DHCP Status")
-        print("26) Start DHCP Server")
-        print("27) Stop DHCP Server")
-        print("28) Enable DHCP Server")
+        print("29) Disable DHCP Server")
+        print("30) DHCP Status")
+        print("31) Start DHCP Server")
+        print("32) Stop DHCP Server")
+        print("33) Enable DHCP Server")
 
         print("---- SSH ----")
-        print("29) Disable SSH")
-        print("30) SSH Status")
-        print("31) Start SSH")
-        print("32) Stop SSH")
-        print("33) Enable SSH")
+        print("34) Disable SSH")
+        print("35) SSH Status")
+        print("36) Start SSH")
+        print("37) Stop SSH")
+        print("38) Enable SSH")
 
         print("---- isc-dhcp-relay ----")
-        print("34) Disable isc-dhcp-relay")
-        print("35) isc-dhcp-relay Status")
-        print("36) Start isc-dhcp-relay")
-        print("37) Stop isc-dhcp-relay")
-        print("38) Enable isc-dhcp-relay")
+        print("39) Disable isc-dhcp-relay")
+        print("40) isc-dhcp-relay Status")
+        print("41) Start isc-dhcp-relay")
+        print("42) Stop isc-dhcp-relay")
+        print("43) Enable isc-dhcp-relay")
 
         print("---- Bind9 ----")
-        print("39) Disable Bind9")
-        print("40) Bind9 Status")
-        print("41) Start Bind9")
-        print("42) Stop Bind9")
-        print("43) Enable Bind9")
+        print("44) Disable Bind9")
+        print("45) Bind9 Status")
+        print("46) Start Bind9")
+        print("47) Stop Bind9")
+        print("48) Enable Bind9")
 
         print("0) Return To Main Menu")
 
@@ -240,80 +247,91 @@ def run_tools_menu():
             run(["systemctl", "status"])
 
         elif choice == "4":
-            run(["sudo", "systemctl", "disable", "apache2"])
+            run(["sudo", "systemctl", "disable", "systemd-networkd"])
         elif choice == "5":
-            run(["sudo", "systemctl", "status", "apache2"])
+            run(["sudo", "systemctl", "status", "systemd-networkd"])
         elif choice == "6":
-            run(["sudo", "systemctl", "start", "apache2"])
+            run(["sudo", "systemctl", "start", "systemd-networkd"])
         elif choice == "7":
-            run(["sudo", "systemctl", "stop", "apache2"])
+            run(["sudo", "systemctl", "stop", "systemd-networkd"])
         elif choice == "8":
-            run(["sudo", "systemctl", "enable", "apache2"])
+            run(["sudo", "systemctl", "enable", "systemd-networkd"])
 
         elif choice == "9":
-            run(["sudo", "systemctl", "disable", "firewalld"])
+            run(["sudo", "systemctl", "disable", "apache2"])
         elif choice == "10":
-            run(["sudo", "systemctl", "status", "firewalld"])
+            run(["sudo", "systemctl", "status", "apache2"])
         elif choice == "11":
-            run(["sudo", "systemctl", "start", "firewalld"])
+            run(["sudo", "systemctl", "start", "apache2"])
         elif choice == "12":
-            run(["sudo", "systemctl", "stop", "firewalld"])
+            run(["sudo", "systemctl", "stop", "apache2"])
         elif choice == "13":
-            run(["sudo", "systemctl", "enable", "firewalld"])
+            run(["sudo", "systemctl", "enable", "apache2"])
 
         elif choice == "14":
-            run(["sudo", "systemctl", "disable", "smbd"])
+            run(["sudo", "systemctl", "disable", "firewalld"])
         elif choice == "15":
-            run(["sudo", "systemctl", "status", "smbd"])
+            run(["sudo", "systemctl", "status", "firewalld"])
         elif choice == "16":
-            run(["sudo", "systemctl", "start", "smbd"])
+            run(["sudo", "systemctl", "start", "firewalld"])
         elif choice == "17":
-            run(["sudo", "systemctl", "stop", "smbd"])
+            run(["sudo", "systemctl", "stop", "firewalld"])
         elif choice == "18":
-            run(["sudo", "systemctl", "enable", "smbd"])
+            run(["sudo", "systemctl", "enable", "firewalld"])
 
         elif choice == "19":
-            run(["sudo", "systemctl", "disable", "nginx"])
+            run(["sudo", "systemctl", "disable", "smbd"])
         elif choice == "20":
-            run(["sudo", "systemctl", "status", "nginx"])
+            run(["sudo", "systemctl", "status", "smbd"])
         elif choice == "21":
-            run(["sudo", "systemctl", "start", "nginx"])
+            run(["sudo", "systemctl", "start", "smbd"])
         elif choice == "22":
-            run(["sudo", "systemctl", "stop", "nginx"])
+            run(["sudo", "systemctl", "stop", "smbd"])
         elif choice == "23":
-            run(["sudo", "systemctl", "enable", "nginx"])
+            run(["sudo", "systemctl", "enable", "smbd"])
 
         elif choice == "24":
-            run(["sudo", "systemctl", "disable", "isc-dhcp-server"])
+            run(["sudo", "systemctl", "disable", "nginx"])
         elif choice == "25":
-            run(["sudo", "systemctl", "status", "isc-dhcp-server"])
+            run(["sudo", "systemctl", "status", "nginx"])
         elif choice == "26":
-            run(["sudo", "systemctl", "start", "isc-dhcp-server"])
+            run(["sudo", "systemctl", "start", "nginx"])
         elif choice == "27":
-            run(["sudo", "systemctl", "stop", "isc-dhcp-server"])
+            run(["sudo", "systemctl", "stop", "nginx"])
         elif choice == "28":
-            run(["sudo", "systemctl", "enable", "isc-dhcp-server"])
+            run(["sudo", "systemctl", "enable", "nginx"])
 
         elif choice == "29":
-            run(["sudo", "systemctl", "disable", "ssh"])
+            run(["sudo", "systemctl", "disable", "isc-dhcp-server"])
         elif choice == "30":
-            run(["sudo", "systemctl", "status", "ssh"])
+            run(["sudo", "systemctl", "status", "isc-dhcp-server"])
         elif choice == "31":
-            run(["sudo", "systemctl", "start", "ssh"])
+            run(["sudo", "systemctl", "start", "isc-dhcp-server"])
         elif choice == "32":
-            run(["sudo", "systemctl", "stop", "ssh"])
+            run(["sudo", "systemctl", "stop", "isc-dhcp-server"])
         elif choice == "33":
-            run(["sudo", "systemctl", "enable", "ssh"])
+            run(["sudo", "systemctl", "enable", "isc-dhcp-server"])
 
         elif choice == "34":
-            run(["sudo", "systemctl", "disable", "bind9"])
+            run(["sudo", "systemctl", "disable", "ssh"])
         elif choice == "35":
-            run(["sudo", "systemctl", "status", "bind9"])
+            run(["sudo", "systemctl", "status", "ssh"])
         elif choice == "36":
-            run(["sudo", "systemctl", "start", "bind9"])
+            run(["sudo", "systemctl", "start", "ssh"])
         elif choice == "37":
-            run(["sudo", "systemctl", "stop", "bind9"])
+            run(["sudo", "systemctl", "stop", "ssh"])
         elif choice == "38":
+            run(["sudo", "systemctl", "enable", "ssh"])
+
+        elif choice == "39":
+            run(["sudo", "systemctl", "disable", "bind9"])
+        elif choice == "40":
+            run(["sudo", "systemctl", "status", "bind9"])
+        elif choice == "41":
+            run(["sudo", "systemctl", "start", "bind9"])
+        elif choice == "42":
+            run(["sudo", "systemctl", "stop", "bind9"])
+        elif choice == "43":
             run(["sudo", "systemctl", "enable", "bind9"])
 
         elif choice == "0":

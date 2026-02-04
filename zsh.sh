@@ -1,7 +1,8 @@
 #!/bin/bash
+
 set -e
 
-echo "=== Install sudo (no sudo used before this) ==="
+echo "=== Install sudo (no sudo used here) ==="
 apt update
 apt install -y sudo
 
@@ -17,46 +18,37 @@ else
 fi
 
 ZSH_CUSTOM=${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}
-ZSHRC="$HOME/.zshrc"
 
 echo "=== Install Zsh plugins ==="
 
-clone_if_missing() {
-  [ ! -d "$2" ] && git clone $1 "$2"
-}
+# zsh-autosuggestions
+if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autosuggestions" ]; then
+  git clone https://github.com/zsh-users/zsh-autosuggestions \
+    "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+fi
 
-clone_if_missing https://github.com/zsh-users/zsh-autosuggestions \
-  "$ZSH_CUSTOM/plugins/zsh-autosuggestions"
+# zsh-autocomplete
+if [ ! -d "$ZSH_CUSTOM/plugins/zsh-autocomplete" ]; then
+  git clone --depth 1 https://github.com/marlonrichert/zsh-autocomplete.git \
+    "$ZSH_CUSTOM/plugins/zsh-autocomplete"
+fi
 
-clone_if_missing https://github.com/marlonrichert/zsh-autocomplete.git \
-  "$ZSH_CUSTOM/plugins/zsh-autocomplete"
+# zsh-syntax-highlighting (HARUS TERAKHIR)
+if [ ! -d "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting" ]; then
+  git clone https://github.com/zsh-users/zsh-syntax-highlighting.git \
+    "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
+fi
 
-clone_if_missing https://github.com/zsh-users/zsh-syntax-highlighting.git \
-  "$ZSH_CUSTOM/plugins/zsh-syntax-highlighting"
+echo "=== Update ~/.zshrc ==="
+ZSHRC="$HOME/.zshrc"
 
-echo "=== Install Powerlevel10k ==="
-clone_if_missing https://github.com/romkatv/powerlevel10k.git \
-  "$ZSH_CUSTOM/themes/powerlevel10k"
-
-echo "=== Backup ~/.zshrc ==="
+# backup zshrc
 cp "$ZSHRC" "$ZSHRC.bak.$(date +%F_%T)"
 
-echo "=== Auto import plugins (non-destructive) ==="
-
-add_plugin() {
-  grep -q "$1" "$ZSHRC" || \
-  sed -i "/^plugins=(/ s/)/ $1)/" "$ZSHRC"
-}
-
-add_plugin zsh-autosuggestions
-add_plugin zsh-autocomplete
-
-# syntax-highlighting HARUS TERAKHIR
-grep -q zsh-syntax-highlighting "$ZSHRC" || \
-sed -i "/^plugins=(/ s/)/ zsh-syntax-highlighting)/" "$ZSHRC"
-
-echo "=== Set Powerlevel10k theme ==="
-sed -i 's|^ZSH_THEME=.*|ZSH_THEME="powerlevel10k/powerlevel10k"|' "$ZSHRC"
+# set plugin list (syntax-highlighting terakhir)
+sed -i '/^plugins=/c\
+plugins=(git zsh-autosuggestions zsh-autocomplete zsh-syntax-highlighting)\
+' "$ZSHRC"
 
 echo "=== Set Zsh as default shell ==="
 if [ "$SHELL" != "$(which zsh)" ]; then

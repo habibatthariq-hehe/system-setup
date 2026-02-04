@@ -6,9 +6,9 @@ echo "=== FW-SRV AUTOMATION START ==="
 ###################################
 # 0. PRE-CHECK
 ###################################
-echo "[0/9] Pre-check interface..."
+echo "[0/8] Pre-check interface..."
 
-for i in ens33 ens34 ens35; do
+for i in ens33 ens37 ens38; do
   ip link show "$i" >/dev/null 2>&1 || {
     echo "ERROR: Interface $i not found"
     exit 1
@@ -18,7 +18,7 @@ done
 ###################################
 # 1. NETWORK CONFIGURATION
 ###################################
-echo "[1/9] Configuring network interfaces..."
+echo "[1/8] Configuring network interfaces..."
 
 cat > /etc/network/interfaces <<'EOF'
 auto lo
@@ -28,15 +28,15 @@ auto ens33
 allow-hotplug ens33
 iface ens33 inet dhcp
 
-auto ens34
-allow-hotplug ens34
-iface ens34 inet static
+auto ens37
+allow-hotplug ens37
+iface ens37 inet static
     address 192.168.30.1
     netmask 255.255.255.0
 
-auto ens35
-allow-hotplug ens35
-iface ens35 inet static
+auto ens38
+allow-hotplug ens38
+iface ens38 inet static
     address 192.168.40.1
     netmask 255.255.255.0
 EOF
@@ -44,9 +44,9 @@ EOF
 systemctl restart networking || echo "Networking restart skipped"
 
 ###################################
-# 2. INSTALL FIREWALL FIRST
+# 2. INSTALL FIREWALL
 ###################################
-echo "[2/9] Installing Firewalld..."
+echo "[2/8] Installing Firewalld..."
 
 apt update
 apt install -y firewalld iproute2 resolvconf
@@ -54,7 +54,7 @@ apt install -y firewalld iproute2 resolvconf
 ###################################
 # 3. ENABLE FIREWALLD
 ###################################
-echo "[3/9] Enabling Firewalld..."
+echo "[3/8] Enabling Firewalld..."
 
 systemctl enable firewalld
 systemctl start firewalld
@@ -62,7 +62,7 @@ systemctl start firewalld
 ###################################
 # 4. IP FORWARDING
 ###################################
-echo "[4/9] Enabling IP forwarding..."
+echo "[4/8] Enabling IP forwarding..."
 
 sed -i 's/^net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 grep -q net.ipv4.ip_forward /etc/sysctl.conf || \
@@ -71,52 +71,13 @@ echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 sysctl -w net.ipv4.ip_forward=1
 
 ###################################
-# 5. INSTALL VPN (WIREGUARD)
+# 5. FIREWALLD ZONES & SERVICES
 ###################################
-echo "[5/9] Installing WireGuard..."
-
-apt install -y wireguard
-
-###################################
-# 6. WIREGUARD SETUP & ACTIVATION
-###################################
-echo "[6/9] Setting up WireGuard..."
-
-mkdir -p /etc/wireguard
-cd /etc/wireguard
-
-if [ ! -f server.key ]; then
-  wg genkey | tee server.key | wg pubkey > server.pub
-  wg genkey | tee client1.key | wg pubkey > client1.pub
-  chmod 600 *.key
-fi
-
-SERVER_KEY=$(cat server.key)
-CLIENT1_PUB=$(cat client1.pub)
-
-cat > /etc/wireguard/wg0.conf <<EOF
-[Interface]
-Address = 10.10.10.1/24
-ListenPort = 51820
-PrivateKey = $SERVER_KEY
-SaveConfig = true
-
-[Peer]
-PublicKey = $CLIENT1_PUB
-AllowedIPs = 10.10.10.2/32
-EOF
-
-systemctl enable wg-quick@wg0
-systemctl start wg-quick@wg0
-
-###################################
-# 7. FIREWALLD ZONES & SERVICES
-###################################
-echo "[7/9] Configuring Firewalld zones..."
+echo "[5/8] Configuring Firewalld zones..."
 
 firewall-cmd --permanent --zone=external --change-interface=ens33
-firewall-cmd --permanent --zone=internal --change-interface=ens34
-firewall-cmd --permanent --zone=dmz --change-interface=ens35
+firewall-cmd --permanent --zone=internal --change-interface=ens37
+firewall-cmd --permanent --zone=dmz --change-interface=ens38
 
 firewall-cmd --permanent --zone=external --add-masquerade
 
@@ -129,9 +90,9 @@ for svc in http https smtp pop3 imap; do
 done
 
 ###################################
-# 8. FIREWALL POLICIES (UNCHANGED)
+# 6. FIREWALL POLICIES (UNCHANGED)
 ###################################
-echo "[8/9] Applying firewall policies (unchanged)..."
+echo "[6/8] Applying firewall policies (unchanged)..."
 
 firewall-cmd --permanent --new-policy=int-to-ext || true
 firewall-cmd --permanent --policy=int-to-ext --add-ingress-zone=internal
@@ -159,9 +120,9 @@ firewall-cmd --permanent --policy=dmz-to-lan --add-egress-zone=internal
 firewall-cmd --permanent --policy=dmz-to-lan --set-target=DROP
 
 ###################################
-# 9. PORT FORWARDING
+# 7. PORT FORWARDING
 ###################################
-echo "[9/9] Configuring port forwarding..."
+echo "[7/8] Configuring port forwarding..."
 
 firewall-cmd --permanent --zone=external \
   --add-forward-port=port=80:proto=tcp:toaddr=192.168.40.3:toport=80
@@ -181,6 +142,4 @@ firewall-cmd --permanent --zone=dmz --add-service=pop3
 
 firewall-cmd --reload
 
-echo "=== FW-SRV SETUP COMPLETE ==="
-echo "WireGuard server public key:"
-cat /etc/wireguard/server.pub
+echo "=== FW-SRV FIREWALL SETUP COMPLETE ==="
