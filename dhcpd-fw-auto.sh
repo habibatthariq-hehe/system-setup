@@ -1,186 +1,86 @@
 #!/bin/bash
 set -e
 
-echo "=== FW-SRV AUTOMATION START ==="
+# ==============================
+# SET DEBUG=1 for live debug
+# ==============================
+DEBUG=0
+
+echo "=== DHCP SERVER AUTOMATION START ==="
 
 ###################################
-# 0. PRE-CHECK
+# 1. INSTALL DHCP SERVER
 ###################################
-echo "[0/9] Pre-check interface..."
-
-for i in ens33 ens37 ens38; do
-  ip link show "$i" >/dev/null 2>&1 || {
-    echo "ERROR: Interface $i not found"
-    exit 1
-  }
-done
-
-###################################
-# 1. NETWORK CONFIGURATION
-###################################
-echo "[1/9] Configuring network interfaces..."
-
-cat > /etc/network/interfaces <<'EOF'
-auto lo
-iface lo inet loopback
-
-auto ens33
-allow-hotplug ens33
-iface ens33 inet dhcp
-
-auto ens37
-allow-hotplug ens37
-iface ens37 inet static
-    address 192.168.30.1
-    netmask 255.255.255.0
-
-auto ens38
-allow-hotplug ens38
-iface ens38 inet static
-    address 192.168.40.1
-    netmask 255.255.255.0
-EOF
-
-systemctl restart networking || echo "Networking restart skipped"
-
-###################################
-# 2. INSTALL FIREWALL FIRST
-###################################
-echo "[2/9] Installing Firewalld..."
+echo "[1/5] Installing isc-dhcp-server..."
 
 apt update
-apt install -y firewalld iproute2 resolvconf
+apt install -y isc-dhcp-server
 
 ###################################
-# 3. ENABLE FIREWALLD
+# 2. CONFIGURE INTERFACES
 ###################################
-echo "[3/9] Enabling Firewalld..."
+echo "[2/5] Configuring DHCP interfaces..."
 
-systemctl enable firewalld
-systemctl start firewalld
-
-###################################
-# 4. IP FORWARDING
-###################################
-echo "[4/9] Enabling IP forwarding..."
-
-sed -i 's/^net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
-grep -q net.ipv4.ip_forward /etc/sysctl.conf || \
-echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
-
-sysctl -w net.ipv4.ip_forward=1
+sed -i 's/^INTERFACESv4=.*/INTERFACESv4="ens37 ens38"/' \
+  /etc/default/isc-dhcp-server
 
 ###################################
-# 5. INSTALL VPN (WIREGUARD)
+# 3. DHCP CONFIGURATION
 ###################################
-echo "[5/9] Installing WireGuard..."
+echo "[3/5] Writing /etc/dhcp/dhcpd.conf..."
 
-apt install -y wireguard
+cat > /etc/dhcp/dhcpd.conf <<'EOF'
+# Global DHCP Config
+option domain-name "lks.local";
+option domain-name-servers 192.168.30.2;
 
-###################################
-# 6. WIREGUARD SETUP & ACTIVATION
-###################################
-echo "[6/9] Setting up WireGuard..."
+default-lease-time 600;
+max-lease-time 7200;
 
-mkdir -p /etc/wireguard
-cd /etc/wireguard
+authoritative;
+ddns-update-style none;
 
-if [ ! -f server.key ]; then
-  wg genkey | tee server.key | wg pubkey > server.pub
-  wg genkey | tee client1.key | wg pubkey > client1.pub
-  chmod 600 *.key
-fi
+# Subnet 192.168.30.0/24
+subnet 192.168.30.0 netmask 255.255.255.0 {
+    range 192.168.30.100 192.168.30.200;
+    option routers 192.168.30.1;
+    option subnet-mask 255.255.255.0;
+    option broadcast-address 192.168.30.255;
+    option domain-name-servers 192.168.30.2;
+    option domain-name "lks.id";
+}
 
-SERVER_KEY=$(cat server.key)
-CLIENT1_PUB=$(cat client1.pub)
-
-cat > /etc/wireguard/wg0.conf <<EOF
-[Interface]
-Address = 10.10.10.1/24
-ListenPort = 51820
-PrivateKey = $SERVER_KEY
-SaveConfig = true
-
-[Peer]
-PublicKey = $CLIENT1_PUB
-AllowedIPs = 10.10.10.2/32
+# Subnet 192.168.40.0/24
+subnet 192.168.40.0 netmask 255.255.255.0 {
+    range 192.168.40.100 192.168.40.200;
+    option routers 192.168.40.1;
+    option subnet-mask 255.255.255.0;
+    option broadcast-address 192.168.40.255;
+    option domain-name-servers 192.168.30.2;
+    option domain-name "lks.id";
+}
 EOF
 
-systemctl enable wg-quick@wg0
-systemctl start wg-quick@wg0
+###################################
+# 4. DEBUG & VALIDATION
+###################################
+echo "[4/5] DHCP config syntax check..."
+dhcpd -t -cf /etc/dhcp/dhcpd.conf
+
+if [ "$DEBUG" -eq 1 ]; then
+  echo "DEBUG MODE ENABLED"
+  echo "Running dhcpd in foreground (Ctrl+C to stop)..."
+  dhcpd -4 -d -cf /etc/dhcp/dhcpd.conf
+  exit 0
+fi
 
 ###################################
-# 7. FIREWALLD ZONES & SERVICES
+# 5. START SERVICE
 ###################################
-echo "[7/9] Configuring Firewalld zones..."
+echo "[5/5] Starting DHCP service..."
 
-firewall-cmd --permanent --zone=external --change-interface=ens33
-firewall-cmd --permanent --zone=internal --change-interface=ens34
-firewall-cmd --permanent --zone=dmz --change-interface=ens35
+systemctl enable isc-dhcp-server
+systemctl restart isc-dhcp-server
 
-firewall-cmd --permanent --zone=external --add-masquerade
-
-for svc in dhcp dns http https ssh smtp pop3 imap; do
-  firewall-cmd --permanent --zone=internal --add-service=$svc
-done
-
-for svc in http https smtp pop3 imap; do
-  firewall-cmd --permanent --zone=dmz --add-service=$svc
-done
-
-###################################
-# 8. FIREWALL POLICIES (UNCHANGED)
-###################################
-echo "[8/9] Applying firewall policies (unchanged)..."
-
-firewall-cmd --permanent --new-policy=int-to-ext || true
-firewall-cmd --permanent --policy=int-to-ext --add-ingress-zone=internal
-firewall-cmd --permanent --policy=int-to-ext --add-egress-zone=external
-firewall-cmd --permanent --policy=int-to-ext --set-target=ACCEPT
-
-firewall-cmd --permanent --new-policy=int-to-int || true
-firewall-cmd --permanent --policy=int-to-int --add-ingress-zone=internal
-firewall-cmd --permanent --policy=int-to-int --add-egress-zone=internal
-firewall-cmd --permanent --policy=int-to-int --set-target=ACCEPT
-
-firewall-cmd --permanent --new-policy=lan-to-wan || true
-firewall-cmd --permanent --policy=lan-to-wan --add-ingress-zone=internal
-firewall-cmd --permanent --policy=lan-to-wan --add-egress-zone=external
-firewall-cmd --permanent --policy=lan-to-wan --set-target=ACCEPT
-
-firewall-cmd --permanent --new-policy=dmz-to-wan || true
-firewall-cmd --permanent --policy=dmz-to-wan --add-ingress-zone=dmz
-firewall-cmd --permanent --policy=dmz-to-wan --add-egress-zone=external
-firewall-cmd --permanent --policy=dmz-to-wan --set-target=ACCEPT
-
-firewall-cmd --permanent --new-policy=dmz-to-lan || true
-firewall-cmd --permanent --policy=dmz-to-lan --add-ingress-zone=dmz
-firewall-cmd --permanent --policy=dmz-to-lan --add-egress-zone=internal
-firewall-cmd --permanent --policy=dmz-to-lan --set-target=DROP
-
-###################################
-# 9. PORT FORWARDING
-###################################
-echo "[9/9] Configuring port forwarding..."
-
-firewall-cmd --permanent --zone=external \
-  --add-forward-port=port=80:proto=tcp:toaddr=192.168.40.3:toport=80
-
-firewall-cmd --permanent --zone=external \
-  --add-forward-port=port=443:proto=tcp:toaddr=192.168.40.3:toport=443
-
-firewall-cmd --permanent --zone=external \
-  --add-forward-port=port=8080:proto=tcp:toaddr=192.168.40.4:toport=80
-
-firewall-cmd --permanent --policy=dmz-to-lan \
-  --add-rich-rule='rule family=ipv4 service name=dns accept'
-
-firewall-cmd --permanent --zone=dmz --add-service=smtp
-firewall-cmd --permanent --zone=dmz --add-service=imap
-firewall-cmd --permanent --zone=dmz --add-service=pop3
-
-firewall-cmd --reload
-
-echo "=== FW-SRV SETUP COMPLETE ==="
-echo "WireGuard server public key:"
-cat /etc/wireguard/server.pub
+echo "=== DHCP SERVER SETUP COMPLETE ==="
+systemctl status isc-dhcp-server --no-pager

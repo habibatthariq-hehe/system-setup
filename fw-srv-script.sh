@@ -6,9 +6,9 @@ echo "=== FW-SRV AUTOMATION START ==="
 ###################################
 # 0. PRE-CHECK
 ###################################
-echo "[0/8] Pre-check interface..."
+echo "[0/9] Pre-check interface..."
 
-for i in ens33 ens36 ens37; do
+for i in ens33 ens34 ens35; do
   ip link show "$i" >/dev/null 2>&1 || {
     echo "ERROR: Interface $i not found"
     exit 1
@@ -18,7 +18,7 @@ done
 ###################################
 # 1. NETWORK CONFIGURATION
 ###################################
-echo "[1/8] Configuring network interfaces..."
+echo "[1/9] Configuring network interfaces..."
 
 cat > /etc/network/interfaces <<'EOF'
 auto lo
@@ -28,15 +28,15 @@ auto ens33
 allow-hotplug ens33
 iface ens33 inet dhcp
 
-auto ens36
-allow-hotplug ens36
-iface ens36 inet static
+auto ens34
+allow-hotplug ens34
+iface ens34 inet static
     address 192.168.30.1
     netmask 255.255.255.0
 
-auto ens37
-allow-hotplug ens37
-iface ens37 inet static
+auto ens35
+allow-hotplug ens35
+iface ens35 inet static
     address 192.168.40.1
     netmask 255.255.255.0
 EOF
@@ -44,25 +44,25 @@ EOF
 systemctl restart networking || echo "Networking restart skipped"
 
 ###################################
-# 2. INSTALL PACKAGES
+# 2. INSTALL FIREWALL FIRST
 ###################################
-echo "[2/8] Installing packages..."
+echo "[2/9] Installing Firewalld..."
 
 apt update
-apt install -y wireguard firewalld iproute2 resolvconf
+apt install -y firewalld iproute2 resolvconf
 
 ###################################
-# 3. ENABLE FIREWALLD (FIXED ORDER)
+# 3. ENABLE FIREWALLD
 ###################################
-echo "[3/8] Enabling Firewalld first..."
+echo "[3/9] Enabling Firewalld..."
 
 systemctl enable firewalld
 systemctl start firewalld
 
 ###################################
-# 4. IP FORWARDING (SAFE)
+# 4. IP FORWARDING
 ###################################
-echo "[4/8] Enabling IP forwarding..."
+echo "[4/9] Enabling IP forwarding..."
 
 sed -i 's/^net.ipv4.ip_forward=.*/net.ipv4.ip_forward=1/' /etc/sysctl.conf
 grep -q net.ipv4.ip_forward /etc/sysctl.conf || \
@@ -71,9 +71,16 @@ echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 sysctl -w net.ipv4.ip_forward=1
 
 ###################################
-# 5. WIREGUARD SETUP (NO FIREWALL HOOKS)
+# 5. INSTALL VPN (WIREGUARD)
 ###################################
-echo "[5/8] Setting up WireGuard..."
+echo "[5/9] Installing WireGuard..."
+
+apt install -y wireguard
+
+###################################
+# 6. WIREGUARD SETUP & ACTIVATION
+###################################
+echo "[6/9] Setting up WireGuard..."
 
 mkdir -p /etc/wireguard
 cd /etc/wireguard
@@ -103,9 +110,9 @@ systemctl enable wg-quick@wg0
 systemctl start wg-quick@wg0
 
 ###################################
-# 6. FIREWALLD ZONES & SERVICES
+# 7. FIREWALLD ZONES & SERVICES
 ###################################
-echo "[6/8] Configuring Firewalld zones..."
+echo "[7/9] Configuring Firewalld zones..."
 
 firewall-cmd --permanent --zone=external --change-interface=ens33
 firewall-cmd --permanent --zone=internal --change-interface=ens34
@@ -122,9 +129,9 @@ for svc in http https smtp pop3 imap; do
 done
 
 ###################################
-# 7. FIREWALL POLICIES (UNCHANGED)
+# 8. FIREWALL POLICIES (UNCHANGED)
 ###################################
-echo "[7/8] Applying firewall policies (unchanged)..."
+echo "[8/9] Applying firewall policies (unchanged)..."
 
 firewall-cmd --permanent --new-policy=int-to-ext || true
 firewall-cmd --permanent --policy=int-to-ext --add-ingress-zone=internal
@@ -152,9 +159,9 @@ firewall-cmd --permanent --policy=dmz-to-lan --add-egress-zone=internal
 firewall-cmd --permanent --policy=dmz-to-lan --set-target=DROP
 
 ###################################
-# 8. PORT FORWARDING
+# 9. PORT FORWARDING
 ###################################
-echo "[8/8] Configuring port forwarding..."
+echo "[9/9] Configuring port forwarding..."
 
 firewall-cmd --permanent --zone=external \
   --add-forward-port=port=80:proto=tcp:toaddr=192.168.40.3:toport=80
@@ -171,9 +178,6 @@ firewall-cmd --permanent --policy=dmz-to-lan \
 firewall-cmd --permanent --zone=dmz --add-service=smtp
 firewall-cmd --permanent --zone=dmz --add-service=imap
 firewall-cmd --permanent --zone=dmz --add-service=pop3
-firewall-cmd --reload
-
-
 
 firewall-cmd --reload
 
