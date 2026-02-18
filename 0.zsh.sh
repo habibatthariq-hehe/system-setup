@@ -2,12 +2,12 @@
 
 set -e
 
-echo "=== Install sudo (no sudo used here) ==="
+echo "=== Install sudo ==="
 apt update
 apt install -y sudo
 
 echo "=== Install dependencies ==="
-sudo apt install -y git wget curl zsh isc-dhcp-relay
+sudo apt install -y git wget curl zsh
 
 echo "=== Install Oh My Zsh ==="
 if [ ! -d "$HOME/.oh-my-zsh" ]; then
