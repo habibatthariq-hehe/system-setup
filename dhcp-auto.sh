@@ -47,7 +47,7 @@ subnet 192.168.30.0 netmask 255.255.255.0 {
     option subnet-mask 255.255.255.0;
     option broadcast-address 192.168.30.255;
     option domain-name-servers 192.168.30.2;
-    option domain-name "lks.id";
+    option domain-name "lab.local";
 }
 
 # Subnet 192.168.40.0/24
@@ -57,7 +57,7 @@ subnet 192.168.40.0 netmask 255.255.255.0 {
     option subnet-mask 255.255.255.0;
     option broadcast-address 192.168.40.255;
     option domain-name-servers 192.168.30.2;
-    option domain-name "lks.id";
+    option domain-name "lab.local";
 }
 EOF
 

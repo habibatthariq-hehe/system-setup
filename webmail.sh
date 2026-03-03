@@ -33,7 +33,7 @@ echo "Please wait for 5 seconds"
 sleep 5
 
 echo "[3/9] Installing Roundcube..."
-echo "⚠️  REMINDER: choose NO for database setup!"
+echo "REMINDER: choose NO for database setup!"
 
 apt install roundcube roundcube-core roundcube-mysql -y
 
