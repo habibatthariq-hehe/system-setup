@@ -56,7 +56,7 @@ esac
 echo "==== Starting Meslo Font Script ===="
 echo "==== Making Directory ====" 
 
-CURRENT_USER_FONT_PATH=~/.local/share/fonts/
+CURRENT_USER_FONT_PATH="$HOME/.local/share/fonts/"
 
 mkdir -p "$CURRENT_USER_FONT_PATH"
 
@@ -64,17 +64,16 @@ echo "==== Success ===="
 
 echo "==== Downloading Font ===="
 
-curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf --output "${CURRENT_USER_FONT_PATH}MesloL>
-curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold.ttf --output "${CURRENT_USER_FONT_PATH}MesloLGS >
-curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf --output "${CURRENT_USER_FONT_PATH}MesloLG>
-curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf --output "${CURRENT_USER_FONT_PATH}>
+curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Regular.ttf --output "${CURRENT_USER_FONT_PATH}MesloLGS NF Regular.ttf"
+curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold.ttf --output "${CURRENT_USER_FONT_PATH}MesloLGS NF Bold.ttf"
+curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Italic.ttf --output "${CURRENT_USER_FONT_PATH}MesloLGS NF Italic.ttf"
+curl -L https://github.com/romkatv/powerlevel10k-media/raw/master/MesloLGS%20NF%20Bold%20Italic.ttf --output "${CURRENT_USER_FONT_PATH}MesloLGS NF Bold Italic.ttf"
 
 sleep 5
 
 echo "==== Done Downloading ===="
 echo "==== Refreshing Font Cache ===="
-echo "==== Enter You're Password ===="
-sudo fc-cache -f -v
+fc-cache -f -v "$CURRENT_USER_FONT_PATH"
 echo "==== Done ===="
 
 echo "=== Install Oh My Zsh ==="
@@ -86,6 +85,8 @@ else
 fi
 
 ZSH_CUSTOM=${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}
+ZSHRC="$HOME/.zshrc"
+touch "$ZSHRC"
 
 echo "=== Install ZSH plugins ==="
 
@@ -108,26 +109,24 @@ if [ ! -d "$HOME/powerlevel10k" ]; then
   git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/powerlevel10k
 fi
 
-if ! grep -q "powerlevel10k.zsh-theme" "$HOME/.zshrc"; then
-  echo 'source ~/powerlevel10k/powerlevel10k.zsh-theme' >>~/.zshrc
+if ! grep -q "powerlevel10k.zsh-theme" "$ZSHRC"; then
+  echo 'source ~/powerlevel10k/powerlevel10k.zsh-theme' >> "$ZSHRC"
 fi
 
 echo "=== Update ~/.zshrc ==="
-ZSHRC="$HOME/.zshrc"
 
 cp "$ZSHRC" "$ZSHRC.bak.$(date +%F_%T)"
 
 if grep -q "^plugins=" "$ZSHRC"; then
-  sed -i '/^plugins=/c\
-plugins=(git zsh-autosuggestions zsh-autocomplete zsh-syntax-highlighting)\
-' "$ZSHRC"
+  sed -i 's/^plugins=.*/plugins=(git zsh-autosuggestions zsh-autocomplete zsh-syntax-highlighting)/' "$ZSHRC"
 else
   echo 'plugins=(git zsh-autosuggestions zsh-autocomplete zsh-syntax-highlighting)' >> "$ZSHRC"
 fi
 
 echo "=== Set ZSH as default shell ==="
-if [ "$SHELL" != "$(which zsh)" ]; then
-  sudo chsh -s "$(which zsh)" "$USER"
+ZSH_PATH="$(command -v zsh)"
+if [ "$SHELL" != "$ZSH_PATH" ] && [ -n "$ZSH_PATH" ]; then
+  sudo chsh -s "$ZSH_PATH" "$USER"
 fi
 
 echo "=== Done! Reloading Zsh ==="
