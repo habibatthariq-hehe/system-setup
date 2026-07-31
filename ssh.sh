@@ -1,38 +1,242 @@
 #!/bin/bash
 
-echo "=== Detecting package manager ==="
+# Global variables to store the target configuration
+TARGET_HOST=""
+TARGET_IP=""
+TARGET_USER=""
 
-PKG_MANAGERS=()
+# ==========================================
+# CORE FUNCTION: Package Manager & SSH Keygen
+# ==========================================
+run_core_function() {
+  clear
+  echo "=== Detecting package manager ==="
 
-command -v apt >/dev/null 2>&1 && PKG_MANAGERS+=("apt")
-command -v dnf >/dev/null 2>&1 && PKG_MANAGERS+=("dnf")
-command -v yum >/dev/null 2>&1 && PKG_MANAGERS+=("yum")
-command -v pacman >/dev/null 2>&1 && PKG_MANAGERS+=("pacman")
-command -v zypper >/dev/null 2>&1 && PKG_MANAGERS+=("zypper")
+  PKG_MANAGERS=()
 
-if [ ${#PKG_MANAGERS[@]} -eq 0 ]; then
-  echo "No supported package manager found."
-  exit 1
-fi
+  command -v apt >/dev/null 2>&1 && PKG_MANAGERS+=("apt")
+  command -v dnf >/dev/null 2>&1 && PKG_MANAGERS+=("dnf")
+  command -v yum >/dev/null 2>&1 && PKG_MANAGERS+=("yum")
+  command -v pacman >/dev/null 2>&1 && PKG_MANAGERS+=("pacman")
+  command -v zypper >/dev/null 2>&1 && PKG_MANAGERS+=("zypper")
 
-if [ ${#PKG_MANAGERS[@]} -eq 1 ]; then
-  PKG="${PKG_MANAGERS[0]}"
-  echo "Detected package manager: $PKG"
-else
-  echo "Multiple package managers detected:"
-  select PKG in "${PKG_MANAGERS[@]}"; do
-    if [ -n "$PKG" ]; then
-      break
-    else
-      echo "Invalid selection"
+  if [ ${#PKG_MANAGERS[@]} -eq 0 ]; then
+    echo "No supported package manager found."
+    echo "Press [Enter] to return to Main Menu..."
+    read
+    return 1
+  fi
+
+  if [ ${#PKG_MANAGERS[@]} -eq 1 ]; then
+    PKG="${PKG_MANAGERS[0]}"
+    echo "Detected package manager: $PKG"
+  else
+    echo "Multiple package managers detected:"
+    select PKG in "${PKG_MANAGERS[@]}"; do
+      if [ -n "$PKG" ]; then
+        break
+      else
+        echo "Invalid selection"
+      fi
+    done
+  fi
+
+  echo ""
+  echo "==== SSH-KEY CHECKER ===="
+  # Check if any public keys already exist in the .ssh directory
+  if ls ~/.ssh/id_*.pub 1> /dev/null 2>&1; then
+    echo "Existing SSH key(s) detected in ~/.ssh/"
+    while true; do
+      read -p "Do you want to generate a [new] key or [keep] the existing one? (new/keep): " key_choice
+      if [[ "$key_choice" == "new" ]]; then
+        echo "==== SSH-KEYGEN STARTED ===="
+        ssh-keygen
+        break
+      elif [[ "$key_choice" == "keep" ]]; then
+        echo "Keeping the existing SSH key. Skipping generation."
+        break
+      else
+        echo "Invalid choice. Please type 'new' or 'keep'."
+      fi
+    done
+  else
+    echo "No existing SSH key found."
+    echo "==== SSH-KEYGEN STARTED ===="
+    ssh-keygen
+  fi
+  
+  echo ""
+  echo "Press [Enter] to return to Main Menu..."
+  read
+}
+
+# ==========================================
+# DEPLOY SSH KEY TO TARGET
+# ==========================================
+deploy_ssh_key() {
+  clear
+  echo "=== Deploy SSH Key to Target ==="
+  
+  # Check if a target is configured
+  if [ -z "$TARGET_IP" ] && [ -z "$TARGET_HOST" ]; then
+    echo "Error: No target configured!"
+    echo "Please configure the Target first (Main Menu Option 2)."
+    echo ""
+    echo "Press [Enter] to return to Main Menu..."
+    read
+    return
+  fi
+
+  # Check if an SSH key actually exists before trying to copy
+  if ! ls ~/.ssh/id_*.pub 1> /dev/null 2>&1; then
+    echo "Error: No SSH key found on this system!"
+    echo "Please run the Core Setup (Main Menu Option 1) to generate a key first."
+    echo ""
+    echo "Press [Enter] to return to Main Menu..."
+    read
+    return
+  fi
+
+  # Prefer IP if provided, otherwise fallback to Hostname
+  local target_address="${TARGET_IP:-$TARGET_HOST}"
+  
+  # Prefer configured Target User, otherwise fallback to current system user
+  local ssh_user="${TARGET_USER:-$USER}"
+
+  echo "Target Address : $target_address"
+  echo "Target Username: $ssh_user"
+  echo ""
+  echo "Attempting to copy SSH key to $ssh_user@$target_address..."
+  echo "Note: You may be prompted for the remote user's password."
+  echo "--------------------------------------------------------"
+
+  # Use ssh-copy-id if available, fallback to manual pipe if not
+  if command -v ssh-copy-id >/dev/null 2>&1; then
+    ssh-copy-id "$ssh_user@$target_address"
+  else
+    echo "[!] ssh-copy-id not found. Attempting manual copy..."
+    # Grabs the public key and appends it to authorized_keys on the remote server safely
+    cat ~/.ssh/id_*.pub | ssh "$ssh_user@$target_address" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+  fi
+
+  echo "--------------------------------------------------------"
+  echo "Deployment attempt finished."
+  echo "Press [Enter] to return to Main Menu..."
+  read
+}
+
+# ==========================================
+# TARGET CONFIGURATION WIZARD
+# ==========================================
+configure_target() {
+  local step=1
+  
+  while true; do
+    clear
+    echo "=== Target Configuration Wizard ==="
+    
+    # STEP 1: TARGET HOST
+    if [ $step -eq 1 ]; then
+      echo "--- Step 1: Target Host ---"
+      echo "Current Target Host: ${TARGET_HOST:-[Not Set]}"
+      echo ""
+      echo "Options:"
+      echo "  1) Input/Change Target Host"
+      echo "  2) Next Step (Target IP)"
+      echo "  3) Cancel & Return to Main Menu"
+      read -p "Select an option [1-3]: " choice
+      
+      case $choice in
+        1) read -p "Enter Target Hostname: " TARGET_HOST ;;
+        2) step=2 ;;
+        3) return ;; # Returns to Main Menu
+        *) echo "Invalid selection." ; sleep 1 ;;
+      esac
+      
+    # STEP 2: TARGET IP
+    elif [ $step -eq 2 ]; then
+      echo "--- Step 2: Target IP ---"
+      echo "Current Target IP: ${TARGET_IP:-[Not Set]}"
+      echo ""
+      echo "Options:"
+      echo "  1) Input/Change Target IP"
+      echo "  2) Previous Step (Back to Host)"
+      echo "  3) Next Step (Target Username)"
+      echo "  4) Cancel & Return to Main Menu"
+      read -p "Select an option [1-4]: " choice
+      
+      case $choice in
+        1) read -p "Enter Target IP: " TARGET_IP ;;
+        2) step=1 ;;
+        3) step=3 ;;
+        4) return ;;
+        *) echo "Invalid selection." ; sleep 1 ;;
+      esac
+
+    # STEP 3: TARGET USERNAME
+    elif [ $step -eq 3 ]; then
+      echo "--- Step 3: Target Username ---"
+      echo "Current Target Username: ${TARGET_USER:-[Not Set]}"
+      echo ""
+      echo "Options:"
+      echo "  1) Input/Change Target Username"
+      echo "  2) Previous Step (Back to IP)"
+      echo "  3) Finish & Automatically Export SSH Key"
+      echo "  4) Cancel & Return to Main Menu"
+      read -p "Select an option [1-4]: " choice
+      
+      case $choice in
+        1) read -p "Enter Target Username: " TARGET_USER ;;
+        2) step=2 ;;
+        3) 
+          echo ""
+          echo "Configuration saved!"
+          echo "Host: $TARGET_HOST | IP: $TARGET_IP | User: $TARGET_USER"
+          sleep 1
+          # Automatically export the key to the target
+          deploy_ssh_key
+          return 
+          ;;
+        4) return ;;
+        *) echo "Invalid selection." ; sleep 1 ;;
+      esac
     fi
   done
-fi
+}
 
-
-echo "==== SSH-KEYGEN STARTED ===="
-ssh-keygen
-sleep 3
-echo "==== COPY SSH KEY TO SERVER ===="
-ssh-copy-id -i ~/.ssh/id_ed25519.pub debian@192.168.1.65
-echo "==== PROCESS COMPLETE ===="
+# ==========================================
+# MAIN MENU LOOP
+# ==========================================
+while true; do
+  clear
+  echo "====================================="
+  echo "         MAIN SETUP SCRIPT           "
+  echo "====================================="
+  echo "1. Run Core Setup (Package Manager & SSH-Keygen)"
+  echo "2. Configure Target and Auto-Export SSH Key"
+  echo "3. Manual SSH Key Export"
+  echo "4. Exit"
+  echo "====================================="
+  
+  # Display current target info if it has been set
+  if [ -n "$TARGET_HOST" ] || [ -n "$TARGET_IP" ] || [ -n "$TARGET_USER" ]; then
+    echo "Current Target -> Host: ${TARGET_HOST:-None} | IP: ${TARGET_IP:-None} | User: ${TARGET_USER:-None}"
+    echo "====================================="
+  fi
+  
+  read -p "Please choose an option [1-4]: " main_choice
+  
+  case $main_choice in
+    1) run_core_function ;;
+    2) configure_target ;;
+    3) deploy_ssh_key ;;
+    4)
+      echo "Exiting script. Goodbye!"
+      exit 0
+      ;;
+    *)
+      echo "Invalid option. Please select 1, 2, 3, or 4."
+      sleep 1
+      ;;
+  esac
+done
