@@ -85,7 +85,21 @@ sleep 5
 
 echo "==== Done Downloading ===="
 echo "==== Refreshing Font Cache ===="
-fc-cache -f -v "$CURRENT_USER_FONT_PATH"
+if [ -n "$DISPLAY" ] || [ -n "$WAYLAND_DISPLAY" ] || [ "$XDG_SESSION_TYPE" = "x11" ] || [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+  echo "Desktop environment detected."
+  if command -v fc-cache >/dev/null 2>&1; then
+    fc-cache -f -v "$CURRENT_USER_FONT_PATH" || echo "Notice: fc-cache encountered an issue, continuing script execution..."
+  else
+    echo "Notice: fc-cache command not found. Skipping font cache refresh."
+  fi
+else
+  echo "TTY mode detected (no GUI display environment)."
+  if command -v fc-cache >/dev/null 2>&1; then
+    fc-cache -f -v "$CURRENT_USER_FONT_PATH" 2>/dev/null || echo "Notice: fc-cache failed in TTY mode, skipping font cache refresh..."
+  else
+    echo "Notice: fc-cache not available in TTY mode, skipping font cache refresh."
+  fi
+fi
 echo "==== Done ===="
 
 echo "=== Install Oh My Zsh ==="

@@ -4,6 +4,7 @@
 TARGET_HOST=""
 TARGET_IP=""
 TARGET_USER=""
+TARGET_PORT=""
 
 # ==========================================
 # CORE FUNCTION: Package Manager & SSH Keygen
@@ -103,20 +104,24 @@ deploy_ssh_key() {
   # Prefer configured Target User, otherwise fallback to current system user
   local ssh_user="${TARGET_USER:-$USER}"
 
+  # Prefer configured Target Port, otherwise default to 22
+  local ssh_port="${TARGET_PORT:-22}"
+
   echo "Target Address : $target_address"
   echo "Target Username: $ssh_user"
+  echo "Target Port    : $ssh_port"
   echo ""
-  echo "Attempting to copy SSH key to $ssh_user@$target_address..."
+  echo "Attempting to copy SSH key to $ssh_user@$target_address on port $ssh_port..."
   echo "Note: You may be prompted for the remote user's password."
   echo "--------------------------------------------------------"
 
   # Use ssh-copy-id if available, fallback to manual pipe if not
   if command -v ssh-copy-id >/dev/null 2>&1; then
-    ssh-copy-id "$ssh_user@$target_address"
+    ssh-copy-id -p "$ssh_port" "$ssh_user@$target_address"
   else
     echo "[!] ssh-copy-id not found. Attempting manual copy..."
-    # Grabs the public key and appends it to authorized_keys on the remote server safely
-    cat ~/.ssh/id_*.pub | ssh "$ssh_user@$target_address" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+    # Grabs the public key and appends it to authorized_keys on the remote server safely using the custom port
+    cat ~/.ssh/id_*.pub | ssh -p "$ssh_port" "$ssh_user@$target_address" "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
   fi
 
   echo "--------------------------------------------------------"
@@ -181,23 +186,46 @@ configure_target() {
       echo "Options:"
       echo "  1) Input/Change Target Username"
       echo "  2) Previous Step (Back to IP)"
-      echo "  3) Finish & Automatically Export SSH Key"
+      echo "  3) Next Step (Target Port)"
       echo "  4) Cancel & Return to Main Menu"
       read -p "Select an option [1-4]: " choice
       
       case $choice in
         1) read -p "Enter Target Username: " TARGET_USER ;;
         2) step=2 ;;
-        3) 
+        3) step=4 ;;
+        4) return ;;
+        *) echo "Invalid selection." ; sleep 1 ;;
+      esac
+      
+    # STEP 4: TARGET PORT
+    elif [ $step -eq 4 ]; then
+      echo "--- Step 4: Target Port ---"
+      echo "Current Target Port: ${TARGET_PORT:-22 (Default)}"
+      echo ""
+      echo "Are you using the default SSH port (22) or a different port?"
+      echo "Options:"
+      echo "  1) Use Default Port (22)"
+      echo "  2) Input Custom Port"
+      echo "  3) Previous Step (Back to Username)"
+      echo "  4) Finish & Automatically Export SSH Key"
+      echo "  5) Cancel & Return to Main Menu"
+      read -p "Select an option [1-5]: " choice
+      
+      case $choice in
+        1) TARGET_PORT=22 ;;
+        2) read -p "Enter Custom Target Port: " TARGET_PORT ;;
+        3) step=3 ;;
+        4) 
           echo ""
           echo "Configuration saved!"
-          echo "Host: $TARGET_HOST | IP: $TARGET_IP | User: $TARGET_USER"
-          sleep 1
+          echo "Host: $TARGET_HOST | IP: $TARGET_IP | User: $TARGET_USER | Port: ${TARGET_PORT:-22}"
+          sleep 2
           # Automatically export the key to the target
           deploy_ssh_key
           return 
           ;;
-        4) return ;;
+        5) return ;;
         *) echo "Invalid selection." ; sleep 1 ;;
       esac
     fi
@@ -219,8 +247,8 @@ while true; do
   echo "====================================="
   
   # Display current target info if it has been set
-  if [ -n "$TARGET_HOST" ] || [ -n "$TARGET_IP" ] || [ -n "$TARGET_USER" ]; then
-    echo "Current Target -> Host: ${TARGET_HOST:-None} | IP: ${TARGET_IP:-None} | User: ${TARGET_USER:-None}"
+  if [ -n "$TARGET_HOST" ] || [ -n "$TARGET_IP" ] || [ -n "$TARGET_USER" ] || [ -n "$TARGET_PORT" ]; then
+    echo "Current Target -> Host: ${TARGET_HOST:-None} | IP: ${TARGET_IP:-None} | User: ${TARGET_USER:-None} | Port: ${TARGET_PORT:-22}"
     echo "====================================="
   fi
   
