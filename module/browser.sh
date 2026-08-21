@@ -136,7 +136,7 @@ while true; do
         sudo apt -f install -y ;;
         dnf|yum) 
         sudo dnf install https://downloads.vivaldi.com/stable/vivaldi-stable_8.1.4087.68-1_amd64.rpm
-        sudo $PKG_MANAGER install vivaldi-stable ;;
+        sudo rpm -i install vivaldi-stable_8.1.4087.68-1_amd64.rpm ;;
         pacman) sudo pacman -S vivaldi --noconfirm ;;
       esac
       echo "Vivaldi successfully installed!"
@@ -144,9 +144,9 @@ while true; do
     7)
       echo "Installing Zen Browser..."
       case $PKG_MANAGER in
-        apt) sudo apt install zen-browser -y ;;
-        dnf|yum) sudo $PKG_MANAGER install zen-browser -y ;;
-        pacman) sudo pacman -S zen-browser --noconfirm ;;
+        apt) curl -fsSL https://github.com/zen-browser/updates-server/raw/refs/heads/main/install.sh | $SHELL ;;
+        dnf|yum) curl -fsSL https://github.com/zen-browser/updates-server/raw/refs/heads/main/install.sh | $SHELL ;;
+        pacman) curl -fsSL https://github.com/zen-browser/updates-server/raw/refs/heads/main/install.sh | $SHELL ;;
       esac
       echo "Zen Browser successfully installed!"
       ;;
