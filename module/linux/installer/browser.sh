@@ -109,6 +109,7 @@ while true; do
         dnf|yum)
           sudo $PKG_MANAGER install dnf-plugins-core -y
           sudo $PKG_MANAGER config-manager --add-repo https://brave-browser-rpm-release.s3.brave.com/brave-browser.repo
+          sudo $PKG_MANAGER makecache --refresh
           sudo $PKG_MANAGER install brave-browser -y
           ;;
         pacman)
@@ -135,8 +136,8 @@ while true; do
         sudo dpkg -i vivaldi-stable_8.1.4087.68-1_amd64.deb
         sudo apt -f install -y ;;
         dnf|yum) 
-        sudo dnf install https://downloads.vivaldi.com/stable/vivaldi-stable_8.1.4087.68-1_amd64.rpm
-        sudo rpm -i install vivaldi-stable_8.1.4087.68-1_amd64.rpm ;;
+          sudo $PKG_MANAGER install -y https://downloads.vivaldi.com/stable/vivaldi-stable_8.1.4087.68-1_amd64.rpm
+          ;;
         pacman) sudo pacman -S vivaldi --noconfirm ;;
       esac
       echo "Vivaldi successfully installed!"
@@ -153,12 +154,60 @@ while true; do
     8)
       echo "Installing Opera..."
       case $PKG_MANAGER in
-        apt) sudo apt install opera-stable -y ;;
-        dnf|yum) sudo $PKG_MANAGER install opera-stable -y ;;
-        pacman) sudo pacman -S opera --noconfirm ;;
+        apt)
+          # Download using official redirect URL and save directly to opera-stable.deb
+          wget -O opera-stable.deb "https://download.opera.com/download/get/?partner=www&opsys=Linux&package=DEB"
+          sudo apt update
+          sudo dpkg -i opera-stable.deb
+          sudo apt -f install -y
+          rm -f opera-stable.deb
+          rename_downloaded_pkg() {
+    local pattern="$1"
+    local target="$2"
+    for file in $pattern; do
+        if [ -f "$file" ]; then
+            mv "$file" "$target"
+            echo "Renamed '$file' -> '$target'"
+            break
+        fi
+    done
+}
+
+# Usage:
+rename_downloaded_pkg
+
+          ;;
+        dnf|yum)
+          wget -O opera-stable.rpm "https://download.opera.com/download/get/?partner=www&opsys=Linux&package=RPM"
+          sudo $PKG_MANAGER install -y opera-stable.rpm
+          rm -f opera-stable.rpm
+
+          rename_downloaded_pkg() {
+    local pattern="$1"
+    local target="$2"
+    for file in $pattern; do
+        if [ -f "$file" ]; then
+            mv "$file" "$target"
+            echo "Renamed '$file' -> '$target'"
+            break
+        fi
+    done
+}
+
+# Usage:
+rename_downloaded_pkg
+
+          ;;
+        pacman)
+          sudo pacman -S opera --noconfirm
+          ;;
       esac
       echo "Opera successfully installed!"
       ;;
+
+
+
+
     9)
       echo "Exiting..."
       exit 0

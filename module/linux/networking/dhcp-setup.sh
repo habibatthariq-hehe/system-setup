@@ -42,6 +42,50 @@ is_cancel() {
     [[ "$val" =~ ^(c|cancel|C|CANCEL|q|quit|Q|QUIT|exit|EXIT)$ ]]
 }
 
+# --- BUG FIX helpers: IPv4 validation & correct broadcast computation ---------
+
+# Returns 0 if $1 is a syntactically valid IPv4 address (0-255 per octet)
+is_valid_ipv4() {
+    local ip="$1"
+    [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    local o
+    for o in "${BASH_REMATCH[@]:1}"; do
+        (( o <= 255 )) || return 1
+    done
+    return 0
+}
+
+# Returns 0 if $1 is a valid netmask (contiguous bits)
+is_valid_netmask() {
+    is_valid_ipv4 "$1" || return 1
+    # BUG FIX: quoted "$1" never word-splits into octets; use read -ra with IFS=.
+    local -a oct
+    IFS=. read -ra oct <<< "$1"
+    local mask=0 i
+    for ((i=0; i<4; i++)); do
+        mask=$(( (mask << 8) | oct[i] ))
+    done
+    # A valid netmask inverted+1 must be a power of two
+    local inv=$(( (~mask) & 0xFFFFFFFF ))
+    (( inv > 0 )) || return 0   # /32 edge case
+    return $(( (inv & (inv + 1)) == 0 ? 0 : 1 ))
+}
+
+# Computes broadcast address from network + netmask (BUG FIX: was hardcoded .255)
+compute_broadcast() {
+    local net="$1" msk="$2"
+    # BUG FIX: quoted assignments never word-split; read -ra actually splits.
+    local -a noct moct
+    IFS=. read -ra noct <<< "$net"
+    IFS=. read -ra moct <<< "$msk"
+    (( ${#noct[@]} == 4 && ${#moct[@]} == 4 )) || { echo ""; return 1; }
+    local mask=0 addr=0 i bcast_int
+    for ((i=0; i<4; i++)); do mask=$(( (mask << 8) | moct[i] )); done
+    for ((i=0; i<4; i++)); do addr=$(( (addr << 8) | noct[i] )); done
+    bcast_int=$(( addr | (~mask & 0xFFFFFFFF) ))
+    echo "$(( (bcast_int >> 24) & 255 )).$(( (bcast_int >> 16) & 255 )).$(( (bcast_int >> 8) & 255 )).$(( bcast_int & 255 ))"
+}
+
 # Pause and clear screen before returning to main menu
 pause_and_clear() {
     echo ""
@@ -199,24 +243,29 @@ detect_interfaces() {
         local iface="${ifaces[$i]}"
         local state="DOWN"
         local ip_addr="N/A"
+        # BUG FIX: never embed raw \033 codes inside %s arguments - printf does
+        # NOT interpret escapes in substituted values (unlike echo -e), so they
+        # printed literally. Colors are applied via the format string instead.
+        local state_color="$RESET" ip_color="$RESET"
 
-        # Detect link state
+        # Detect link state (store plain text + pick a color)
         if ip link show "$iface" 2>/dev/null | grep -q "state UP"; then
-            state="${GREEN}UP${RESET}"
+            state="UP";       state_color="$GREEN"
         elif ip link show "$iface" 2>/dev/null | grep -q "state UNKNOWN"; then
-            state="${YELLOW}UNKNOWN${RESET}"
+            state="UNKNOWN";  state_color="$YELLOW"
         else
-            state="${RED}DOWN${RESET}"
+            state="DOWN";     state_color="$RED"
         fi
 
-        # Detect IP address
+        # Detect IP address (plain text; color chosen separately)
         local detected_ip
         detected_ip=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP 'inet \K[\d.]+' | head -1)
         if [ -n "$detected_ip" ]; then
-            ip_addr="${GREEN}${detected_ip}${RESET}"
+            ip_addr="$detected_ip"; ip_color="$GREEN"
         fi
 
-        printf "  ${CYAN}%-5s${RESET} %-16s %-18s %-20s\n" "[$((i+1))]" "$iface" "$state" "$ip_addr"
+        printf "  ${CYAN}%-5s${RESET} %-16s ${state_color}%-8s${RESET} ${ip_color}%-20s${RESET}\n" \
+            "[$((i+1))]" "$iface" "$state" "$ip_addr"
     done
 
     echo ""
@@ -263,19 +312,38 @@ configure_dhcp() {
     fi
 
     echo ""
+    echo -e "  ${DIM}Pick one or more interfaces. Use numbers separated by spaces or commas${RESET}"
+    echo -e "  ${DIM}(e.g. '1' or '1 3' or '1,2,3'), or type names directly (e.g. 'ens37 ens38').${RESET}"
     read -p "  Enter interface(s) to bind [${ifaces[0]:-eth0}] (or 'c' to cancel): " iface_input
     if is_cancel "$iface_input"; then
         log_warn "Configuration cancelled by user. No changes were made."
         return
     fi
 
-    local selected_ifaces=""
+    # ---- MULTI-SELECT (new): resolve numbers and/or names into a list ----
+    local selected_ifaces="" sel_tok resolved
     if [ -z "$iface_input" ]; then
         selected_ifaces="${ifaces[0]:-eth0}"
-    elif [[ "$iface_input" =~ ^[0-9]+$ ]] && [ "$iface_input" -ge 1 ] 2>/dev/null && [ "$iface_input" -le "${#ifaces[@]}" ] 2>/dev/null; then
-        selected_ifaces="${ifaces[$((iface_input-1))]}"
     else
-        selected_ifaces="$iface_input"
+        # Accept "1", "1 3", "1,2,3" -> normalize commas to spaces
+        for sel_tok in ${iface_input//,/ }; do
+            resolved=""
+            if [[ "$sel_tok" =~ ^[0-9]+$ ]] && [ "$sel_tok" -ge 1 ] 2>/dev/null \
+               && [ "$sel_tok" -le "${#ifaces[@]}" ] 2>/dev/null; then
+                resolved="${ifaces[$((sel_tok-1))]}"
+            else
+                resolved="$sel_tok"
+            fi
+            # de-duplicate while building the space-separated bind list
+            case " $selected_ifaces " in
+                *" $resolved "*) ;;                      # already picked - skip
+                *) selected_ifaces+="${selected_ifaces:+ }$resolved" ;;
+            esac
+        done
+        if [ -z "$selected_ifaces" ]; then
+            log_error "No valid interfaces parsed from '$iface_input'."
+            return
+        fi
     fi
 
     log_success "Selected interface(s): ${GREEN}${selected_ifaces}${RESET}"
@@ -352,35 +420,81 @@ configure_dhcp() {
 
         local sub_net sub_mask r_start r_end gw s_dns s_dom
 
-        read -p "  Subnet Network IP [$def_net]: " sub_net
-        if is_cancel "$sub_net"; then return; fi
-        [ -z "$sub_net" ] && sub_net="$def_net"
+        # --- BUG FIX: validate every IP input; loop until valid or cancel ---
+        while true; do
+            read -p "  Subnet Network IP [$def_net]: " sub_net
+            if is_cancel "$sub_net"; then return; fi
+            [ -z "$sub_net" ] && sub_net="$def_net"
+            if is_valid_ipv4 "$sub_net"; then break; fi
+            log_error "Invalid IPv4 address: '$sub_net'. Try again."
+        done
 
-        read -p "  Subnet Netmask [$def_mask]: " sub_mask
-        if is_cancel "$sub_mask"; then return; fi
-        [ -z "$sub_mask" ] && sub_mask="$def_mask"
+        while true; do
+            read -p "  Subnet Netmask [$def_mask]: " sub_mask
+            if is_cancel "$sub_mask"; then return; fi
+            [ -z "$sub_mask" ] && sub_mask="$def_mask"
+            if is_valid_netmask "$sub_mask"; then break; fi
+            log_error "Invalid netmask: '$sub_mask' (must be contiguous, e.g. 255.255.255.0)."
+        done
 
-        read -p "  DHCP Range Start [$def_start]: " r_start
-        if is_cancel "$r_start"; then return; fi
-        [ -z "$r_start" ] && r_start="$def_start"
+        # BUG FIX #3: refuse a subnet that is already declared in dhcpd.conf
+        if [ -f "$DHCPD_CONF" ] && grep -qE "^[[:space:]]*subnet ${sub_net//./\\.} netmask " "$DHCPD_CONF"; then
+            log_error "Subnet $sub_net is already declared in $DHCPD_CONF."
+            log_info  "Use option 10 (Add Subnet to Existing Config) to extend it, or pick another network."
+            continue
+        fi
 
-        read -p "  DHCP Range End [$def_end]: " r_end
-        if is_cancel "$r_end"; then return; fi
-        [ -z "$r_end" ] && r_end="$def_end"
+        local bcast
+        bcast=$(compute_broadcast "$sub_net" "$sub_mask")
 
-        read -p "  Router / Gateway IP [$def_gw]: " gw
-        if is_cancel "$gw"; then return; fi
-        [ -z "$gw" ] && gw="$def_gw"
+        while true; do
+            read -p "  DHCP Range Start [$def_start]: " r_start
+            if is_cancel "$r_start"; then return; fi
+            [ -z "$r_start" ] && r_start="$def_start"
+            if ! is_valid_ipv4 "$r_start"; then log_error "Invalid IP."; continue; fi
 
-        read -p "  Subnet DNS Server [$global_dns]: " s_dns
-        if is_cancel "$s_dns"; then return; fi
-        [ -z "$s_dns" ] && s_dns="$global_dns"
+            read -p "  DHCP Range End   [$def_end]: " r_end
+            if is_cancel "$r_end"; then return; fi
+            [ -z "$r_end" ] && r_end="$def_end"
+            if ! is_valid_ipv4 "$r_end"; then log_error "Invalid IP."; continue; fi
+
+            # BUG FIX: range must be inside the declared subnet & start < end
+            local rb re nb
+            rb=$(compute_broadcast "$r_start" "$sub_mask"); rb="${rb%.*}"
+            re=$(compute_broadcast "$r_end"   "$sub_mask"); re="${re%.*}"
+            nb=$(compute_broadcast "$sub_net" "$sub_mask"); nb="${nb%.*}"
+            if [[ "$rb" != "$nb" || "$re" != "$nb" ]]; then
+                log_error "Range must fall inside network $sub_net/$sub_mask."
+                continue
+            fi
+            if [[ "$r_start" == "$r_end" ]]; then
+                log_error "Range start and end cannot be identical."
+                continue
+            fi
+            break
+        done
+
+        while true; do
+            read -p "  Router / Gateway IP [$def_gw]: " gw
+            if is_cancel "$gw"; then return; fi
+            [ -z "$gw" ] && gw="$def_gw"
+            if is_valid_ipv4 "$gw"; then break; fi
+            log_error "Invalid IPv4 address."
+        done
+
+        while true; do
+            read -p "  Subnet DNS Server [$global_dns]: " s_dns
+            if is_cancel "$s_dns"; then return; fi
+            [ -z "$s_dns" ] && s_dns="$global_dns"
+            if is_valid_ipv4 "$s_dns"; then break; fi
+            log_error "Invalid IPv4 address."
+        done
 
         read -p "  Subnet Domain Name [$global_domain]: " s_dom
         if is_cancel "$s_dom"; then return; fi
         [ -z "$s_dom" ] && s_dom="$global_domain"
 
-        subnets+=("SUBNET=$sub_net|NETMASK=$sub_mask|RANGE_START=$r_start|RANGE_END=$r_end|ROUTER=$gw|DNS=$s_dns|DOMAIN=$s_dom")
+        subnets+=("SUBNET=$sub_net|NETMASK=$sub_mask|RANGE_START=$r_start|RANGE_END=$r_end|ROUTER=$gw|DNS=$s_dns|DOMAIN=$s_dom|BCAST=$bcast")
 
         log_success "Subnet #$subnet_count captured."
         subnet_count=$((subnet_count + 1))
@@ -412,14 +526,18 @@ configure_dhcp() {
     echo ""
 
     for idx in "${!subnets[@]}"; do
-        IFS='|' read -r s_net s_mask r_start r_end router dns domain <<< "${subnets[$idx]}"
+        # BUG FIX: read all 8 fields; previously only 7 were read so
+        # "BCAST=..." leaked into the Domain display.
+        IFS='|' read -r s_net s_mask r_start r_end router dns domain bcast <<< "${subnets[$idx]}"
         s_net="${s_net#*=}"; s_mask="${s_mask#*=}"; r_start="${r_start#*=}"
         r_end="${r_end#*=}"; router="${router#*=}"; dns="${dns#*=}"; domain="${domain#*=}"
+        bcast="${bcast#*=}"
         echo -e "  ${CYAN}[Subnet $((idx+1))]${RESET}"
         echo -e "    Network:    $s_net / $s_mask"
         echo -e "    Range:      $r_start - $r_end"
         echo -e "    Gateway:    $router"
         echo -e "    DNS:        $dns"
+        echo -e "    Broadcast:  $bcast"
         echo -e "    Domain:     $domain"
     done
 
@@ -493,13 +611,17 @@ EOF
     fi
 
     for idx in "${!subnets[@]}"; do
-        IFS='|' read -r s_net s_mask r_start r_end router dns domain <<< "${subnets[$idx]}"
+        IFS='|' read -r s_net s_mask r_start r_end router dns domain bcast <<< "${subnets[$idx]}"
         s_net="${s_net#*=}"; s_mask="${s_mask#*=}"; r_start="${r_start#*=}"
         r_end="${r_end#*=}"; router="${router#*=}"; dns="${dns#*=}"; domain="${domain#*=}"
+        bcast="${bcast#*=}"
 
-        local net_prefix
-        net_prefix=$(echo "$s_net" | cut -d'.' -f1-3)
-        local bcast="${net_prefix}.255"
+        # SAFETY GUARD: an empty broadcast produced dhcpd syntax errors
+        # ("semicolon expected / option ^"). Never write a broken line.
+        if [ -z "$bcast" ]; then
+            log_error "Internal error: broadcast for $s_net is empty - aborting before writing config."
+            return 1
+        fi
 
         cat >> "$DHCPD_CONF" <<EOF
 # Subnet #$((idx+1)): $s_net/$s_mask
@@ -847,6 +969,318 @@ restart_dhcp_service() {
     fi
 }
 
+dhcp_server_status() {
+    clear
+    print_banner
+    echo -e "${BLUE}${BOLD}  [Option 8] DHCP Service Status${RESET}"
+    print_separator
+    echo ""
+    systemctl status "$DHCP_SERVICE" --no-pager 2>/dev/null | sed 's/^/  /'
+}
+
+# ==============================================================================
+# MENU OPTION 9: Detect Existing DHCP Configuration
+# ==============================================================================
+
+# Scans dhcpd.conf and reports every subnet declaration found, plus service state.
+detect_existing_config() {
+    clear
+    print_banner
+    echo -e "${BLUE}${BOLD}  [Option 9] Detect Existing DHCP Configuration${RESET}"
+    print_separator
+
+    if [ ! -f "$DHCPD_CONF" ]; then
+        log_warn "No DHCP configuration file at ${DHCPD_CONF}."
+        log_info "This system has no existing dhcpd configuration."
+        log_info "Use option 3 to create one."
+        return 1
+    fi
+
+    log_success "Configuration file found: ${GREEN}${DHCPD_CONF}${RESET}"
+    echo ""
+
+    # --- Extract subnet declarations ---
+    local subnets_found=()
+    mapfile -t subnets_found < <(grep -E '^[[:space:]]*subnet[[:space:]]+[0-9.]+[[:space:]]+netmask[[:space:]]+[0-9.]+' "$DHCPD_CONF" | sed 's/^[[:space:]]*//')
+
+    if [ ${#subnets_found[@]} -eq 0 ]; then
+        log_warn "File exists but contains no subnet declarations."
+    else
+        echo -e "  ${BOLD}Found ${CYAN}${#subnets_found[@]}${RESET} ${BOLD}subnet declaration(s):${RESET}"
+        print_separator
+
+        local i=0
+        for line in "${subnets_found[@]}"; do
+            i=$((i+1))
+            # Extract the network + netmask from this declaration line
+            local s_net s_mask
+            s_net=$(echo "$line"  | awk '{print $2}')
+            s_mask=$(echo "$line" | awk '{print $4}')
+
+            echo ""
+            echo -e "  ${CYAN}[Subnet $i]${RESET} $s_net / $s_mask"
+            echo -e "      Declaration : ${DIM}$line${RESET}"
+
+            # Find the closing brace of THIS subnet block and scan inside it
+            local block
+            block=$(awk -v net="$s_net" '
+                $0 ~ "^[[:space:]]*subnet[[:space:]]+" net "[[:space:]]+netmask" { inblock=1 }
+                inblock { print }
+                inblock && /^[[:space:]]*}/ { exit }
+            ' "$DHCPD_CONF")
+
+            local r_start r_end router dns
+            r_start=$(echo "$block" | grep -oP 'range\s+\K[0-9.]+' | head -1)
+            r_end=$(echo "$block"   | grep -oP 'range\s+[0-9.]+\s+\K[0-9.]+' | head -1)
+            router=$(echo "$block"  | grep -oP 'option\s+routers\s+\K[0-9.]+' | head -1)
+            dns=$(echo "$block"     | grep -oP 'option\s+domain-name-servers\s+\K[0-9.]+' | head -1)
+
+            [ -n "$r_start" ] && echo -e "      Range       : ${GREEN}$r_start - $r_end${RESET}" || echo -e "      Range       : ${YELLOW}(none declared)${RESET}"
+            [ -n "$router" ]  && echo -e "      Gateway     : $router"
+            [ -n "$dns" ]     && echo -e "      DNS         : $dns"
+        done
+        echo ""
+    fi
+
+    # --- Global settings summary ---
+    print_separator
+    echo -e "  ${BOLD}Global settings:${RESET}"
+    grep -E '^\s*(option domain-name|option domain-name-servers|default-lease-time|max-lease-time|authoritative)' "$DHCPD_CONF" \
+        | sed 's/^[[:space:]]*/      /' || echo -e "      ${DIM}(none found)${RESET}"
+
+    # --- Service status ---
+    print_separator
+    echo -e "  ${BOLD}Service (${DHCP_SERVICE}):${RESET}"
+    if systemctl is-active "$DHCP_SERVICE" >/dev/null 2>&1; then
+        log_success "running"
+    else
+        log_warn "not running"
+    fi
+    return 0
+}
+
+# ==============================================================================
+# MENU OPTION 10: Add Subnet(s) to an EXISTING Configuration
+# ==============================================================================
+
+# Interactive loop that appends one or more NEW subnets to dhcpd.conf without
+# touching global settings or existing subnets.
+add_subnet_to_existing() {
+    clear
+    print_banner
+    echo -e "${BLUE}${BOLD}  [Option 10] Add Subnet(s) to Existing Configuration${RESET}"
+    print_separator
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at ANY prompt to abort.${RESET}\\n"
+
+    if [ ! -f "$DHCPD_CONF" ]; then
+        log_error "${DHCPD_CONF} does not exist yet."
+        log_info  "Use option 3 (Configure DHCP Server) to create the initial configuration first."
+        return 1
+    fi
+
+    # Show what's already there so the user can avoid duplicates
+    log_info "Currently declared subnets:"
+    if grep -qE '^[[:space:]]*subnet[[:space:]]' "$DHCPD_CONF"; then
+        grep -E '^[[:space:]]*subnet[[:space:]]' "$DHCPD_CONF" | sed 's/^[[:space:]]*/      /'
+    else
+        echo -e "      ${DIM}(none — file exists but has no subnets)${RESET}"
+    fi
+    echo ""
+
+    local new_subnets=()
+    local count=1
+    local add_more="y"
+
+    while [[ "$add_more" =~ ^[Yy]$ ]]; do
+        echo -e "\\n  ${YELLOW}${BOLD}--- New Subnet #$count ---${RESET} ${DIM}(type 'c' to cancel)${RESET}"
+
+        local def_net="192.168.$((30 + count*10)).0"
+        local def_mask="255.255.255.0"
+        local def_gw="192.168.$((30 + count*10)).1"
+
+        local sub_net sub_mask r_start r_end gw s_dns s_dom bcast
+
+        while true; do
+            read -p "  Subnet Network IP [$def_net]: " sub_net
+            if is_cancel "$sub_net"; then log_warn "Cancelled. Nothing was changed."; return 1; fi
+            [ -z "$sub_net" ] && sub_net="$def_net"
+            is_valid_ipv4 "$sub_net" && break
+            log_error "Invalid IPv4 address."
+        done
+
+        # Duplicate check against BOTH the file and what we've queued this session
+        if grep -qE "^[[:space:]]*subnet ${sub_net//./\\.} netmask " "$DHCPD_CONF"; then
+            log_error "Subnet $sub_net already exists in dhcpd.conf — skipping."
+            continue
+        fi
+        local dup=0 s
+        for s in "${new_subnets[@]:-}"; do
+            [[ "$s" == SUBNET=$sub_net\|* ]] && dup=1 && break
+        done
+        if [ $dup -eq 1 ]; then
+            log_error "Subnet $sub_net was already queued in this session — skipping."
+            continue
+        fi
+
+        while true; do
+            read -p "  Subnet Netmask [$def_mask]: " sub_mask
+            if is_cancel "$sub_mask"; then log_warn "Cancelled."; return 1; fi
+            [ -z "$sub_mask" ] && sub_mask="$def_mask"
+            is_valid_netmask "$sub_mask" && break
+            log_error "Invalid netmask."
+        done
+
+        bcast=$(compute_broadcast "$sub_net" "$sub_mask")
+        local net_prefix="${bcast%.*}"
+
+        while true; do
+            read -p "  DHCP Range Start [${net_prefix}.100]: " r_start
+            if is_cancel "$r_start"; then log_warn "Cancelled."; return 1; fi
+            [ -z "$r_start" ] && r_start="${net_prefix}.100"
+            if ! is_valid_ipv4 "$r_start"; then log_error "Invalid IP."; continue; fi
+
+            read -p "  DHCP Range End   [${net_prefix}.200]: " r_end
+            if is_cancel "$r_end"; then log_warn "Cancelled."; return 1; fi
+            [ -z "$r_end" ] && r_end="${net_prefix}.200"
+            if ! is_valid_ipv4 "$r_end"; then log_error "Invalid IP."; continue; fi
+
+            local rb re nb
+            rb=$(compute_broadcast "$r_start" "$sub_mask"); rb="${rb%.*}"
+            re=$(compute_broadcast "$r_end"   "$sub_mask"); re="${re%.*}"
+            nb=$(compute_broadcast "$sub_net" "$sub_mask"); nb="${nb%.*}"
+            [[ "$rb" != "$nb" || "$re" != "$nb" ]] && { log_error "Range outside network $sub_net/$sub_mask."; continue; }
+            break
+        done
+
+        while true; do
+            read -p "  Router / Gateway IP [$def_gw]: " gw
+            if is_cancel "$gw"; then log_warn "Cancelled."; return 1; fi
+            [ -z "$gw" ] && gw="$def_gw"
+            is_valid_ipv4 "$gw" && break
+            log_error "Invalid IPv4 address."
+        done
+
+        local global_dns
+        global_dns=$(grep -oP 'option\s+domain-name-servers\s+\K[0-9.]+' "$DHCPD_CONF" | head -1)
+        [ -z "$global_dns" ] && global_dns="8.8.8.8"
+
+        while true; do
+            read -p "  Subnet DNS Server [$global_dns]: " s_dns
+            if is_cancel "$s_dns"; then log_warn "Cancelled."; return 1; fi
+            [ -z "$s_dns" ] && s_dns="$global_dns"
+            is_valid_ipv4 "$s_dns" && break
+            log_error "Invalid IPv4 address."
+        done
+
+        local global_domain
+        global_domain=$(grep -oP 'option\s+domain-name\s+"\K[^"]+' "$DHCPD_CONF" | head -1)
+        [ -z "$global_domain" ] && global_domain="lab.local"
+
+        read -p "  Subnet Domain Name [$global_domain]: " s_dom
+        if is_cancel "$s_dom"; then log_warn "Cancelled."; return 1; fi
+        [ -z "$s_dom" ] && s_dom="$global_domain"
+
+        new_subnets+=("SUBNET=$sub_net|NETMASK=$sub_mask|RANGE_START=$r_start|RANGE_END=$r_end|ROUTER=$gw|DNS=$s_dns|DOMAIN=$s_dom|BCAST=$bcast")
+        log_success "Subnet #$count ($sub_net/$sub_mask) queued."
+        count=$((count + 1))
+
+        read -p "  Add another subnet? [y/N/c]: " add_more
+        if is_cancel "$add_more"; then log_warn "Cancelled."; return 1; fi
+    done
+
+    if [ ${#new_subnets[@]} -eq 0 ]; then
+        log_warn "No subnets were queued. Nothing to do."
+        return 0
+    fi
+
+    # --- Review ---
+    echo ""
+    echo -e "${CYAN}${BOLD}  Review — ${#new_subnets[@]} subnet(s) to append to ${DHCPD_CONF}:${RESET}"
+    print_separator
+    for idx in "${!new_subnets[@]}"; do
+        IFS='|' read -r a b c d e f g h <<< "${new_subnets[$idx]}"
+        echo -e "  ${CYAN}[Subnet $((idx+1))]${RESET} ${a#SUBNET=} / ${b#NETMASK=}"
+        echo -e "      Range: ${c#RANGE_START=} - ${d#RANGE_END=}   GW: ${e#ROUTER=}   DNS: ${f#DNS=}"
+    done
+    print_separator
+    echo ""
+
+    read -p "  Apply these changes? [y/N/c]: " confirm
+    if is_cancel "$confirm" || [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_warn "Cancelled. No changes were made."
+        return 1
+    fi
+
+    # --- Backup, append, verify ---
+    local ts
+    ts=$(date +%Y%m%d%H%M%S)
+    cp "$DHCPD_CONF" "${DHCPD_CONF}.bak.${ts}"
+    log_success "Backed up ${DHCPD_CONF} -> ${DHCPD_CONF}.bak.${ts}"
+
+    cat >> "$DHCPD_CONF" <<EOF
+
+# ==============================================================================
+# Subnet(s) appended by add-subnet wizard on $(date '+%Y-%m-%d %H:%M:%S')
+# ==============================================================================
+
+EOF
+
+    for idx in "${!new_subnets[@]}"; do
+        IFS='|' read -r s_net s_mask r_start r_end router dns domain bcast <<< "${new_subnets[$idx]}"
+        s_net="${s_net#*=}"; s_mask="${s_mask#*=}"; r_start="${r_start#*=}"
+        r_end="${r_end#*=}"; router="${router#*=}"; dns="${dns#*=}"; domain="${domain#*=}"
+        bcast="${bcast#*=}"
+
+        # SAFETY GUARD (same as main wizard): never write an empty broadcast.
+        if [ -z "$bcast" ]; then
+            log_error "Internal error: broadcast for $s_net is empty - aborting before writing config."
+            return 1
+        fi
+
+        cat >> "$DHCPD_CONF" <<EOF
+# Appended subnet #$((idx+1)): $s_net/$s_mask
+subnet $s_net netmask $s_mask {
+    range $r_start $r_end;
+    option routers $router;
+    option subnet-mask $s_mask;
+    option broadcast-address $bcast;
+    option domain-name-servers $dns;
+    option domain-name "$domain";
+}
+
+EOF
+    done
+
+    log_success "${#new_subnets[@]} subnet(s) appended to ${GREEN}${DHCPD_CONF}${RESET}"
+
+    # Syntax check before offering restart
+    if command -v dhcpd >/dev/null 2>&1; then
+        log_info "Running syntax check..."
+        if dhcpd -t -cf "$DHCPD_CONF" >/dev/null 2>&1; then
+            log_success "Syntax check PASSED."
+        else
+            log_error "Syntax check FAILED — restoring backup."
+            cp "${DHCPD_CONF}.bak.${ts}" "$DHCPD_CONF"
+            log_success "Original config restored from backup."
+            dhcpd -t -cf "$DHCPD_CONF" 2>&1 | sed 's/^/      /' || true
+            return 1
+        fi
+    else
+        log_warn "dhcpd binary not found — skipping syntax check."
+    fi
+
+    read -p "  Restart DHCP service now? [Y/n/c]: " restart_confirm
+    if is_cancel "$restart_confirm" || [[ "$restart_confirm" =~ ^[Nn]$ ]]; then
+        log_info "Restart skipped. Remember to restart manually."
+    else
+        if systemctl restart "$DHCP_SERVICE" 2>&1; then
+            log_success "DHCP service restarted successfully!"
+        else
+            log_error "Failed to restart ${DHCP_SERVICE}. Use option 4 (Debug)."
+        fi
+    fi
+}
+
 # ==============================================================================
 # MAIN MENU LOOP
 # ==============================================================================
@@ -873,9 +1307,12 @@ main() {
         echo -e "  ${CYAN}5${RESET}) Rollback Configuration"
         echo -e "  ${CYAN}6${RESET}) Show Current Configuration"
         echo -e "  ${CYAN}7${RESET}) Restart DHCP Service"
-        echo -e "  ${RED}8${RESET}) Exit ${DIM}(or type 'c' / 'q')${RESET}"
+        echo -e "  ${CYAN}8${RESET}) DHCP Service Status"
+        echo -e "  ${CYAN}9${RESET}) Detect Existing DHCP Configuration"
+        echo -e "  ${CYAN}10${RESET}) Add Subnet(s) to Existing Config"
+        echo -e "  ${RED}0${RESET}) Exit ${DIM}(or type 'c' / 'q')${RESET}"
         print_separator
-        read -p "  Enter your choice [1-8]: " choice
+        read -p "  Enter your choice [0-10]: " choice
 
         case $choice in
             1)
@@ -906,13 +1343,25 @@ main() {
                 restart_dhcp_service
                 pause_and_clear
                 ;;
-            8|q|Q|c|C|exit|quit)
+            8)
+                dhcp_server_status
+                pause_and_clear
+                ;;
+            9)
+                detect_existing_config
+                pause_and_clear
+                ;;
+            10)
+                add_subnet_to_existing
+                pause_and_clear
+                ;;
+            0|q|Q|c|C|exit|quit)
                 echo ""
                 log_info "Exiting DHCP Setup Tool. Goodbye!"
                 exit 0
                 ;;
             *)
-                log_error "Invalid choice. Please enter a number between 1-8."
+                log_error "Invalid choice. Please enter a number between 0-10."
                 sleep 1.2
                 clear
                 ;;
