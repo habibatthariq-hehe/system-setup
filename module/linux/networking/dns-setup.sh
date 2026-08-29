@@ -543,6 +543,18 @@ show_service_status() {
     fi
 }
 
+bind9_status() {
+    print_separator
+    echo -n "  BIND9 (${BIND_SERVICE}): "
+    systemctl status named.service
+}
+
+dnsmasq_status() {
+    print_separator
+    echo -n "  DNSMASQ (${DNSMASQ_SERVICE}): "
+    systemctl status dnsmasq.service
+}
+
 rollback_config() {
     print_separator
     echo -e "${BOLD}  DNS Configuration Rollback${RESET}"
@@ -627,14 +639,16 @@ while true; do
     echo -e "${BOLD}  Available Actions:${RESET}"
     echo "    1) Install DNSMASQ"
     echo "    2) Install BIND9"
-    echo -e "    3) ${GREEN}${BOLD}Configure Internet Resolve-Only Mode (Forwarder)${RESET}"
+    echo "    3) Configure Internet Resolve-Only Mode (Forwarder)"
     echo "    4) Test Local DNS Resolution (127.0.0.1)"
     echo "    5) View DNS Services Status & Port 53 Listeners"
     echo "    6) Restore / Rollback Configuration"
+    echo "    7) Show BIND9 Status"
+    echo "    8) Show DNSMASQ Status"
     echo "    0) Exit"
     print_separator
 
-    read -p "  Choose an option [0-6]: " option
+    read -p "  Choose an option [0-8]: " option
 
     case "$option" in
         1)
@@ -656,6 +670,12 @@ while true; do
             ;;
         6)
             rollback_config
+            ;;
+        7)
+            bind9_status
+            ;;
+        8)
+            dnsmasq_status
             ;;
         0|q|Q|exit)
             echo ""
