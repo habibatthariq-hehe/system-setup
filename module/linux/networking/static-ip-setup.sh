@@ -72,6 +72,11 @@ set_static_ip() {
         echo -e "  ${YELLOW}${BOLD}[DRY RUN MODE ENABLED - NO CHANGES WILL BE APPLIED]${RESET}"
     fi
     print_separator
+    
+    echo -e "  ${BOLD}Available Interfaces:${RESET}"
+    ip -o link show | awk -F': ' '{print $2}' | sed 's/^/    /'
+    echo ""
+    
     echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at ANY prompt to abort and return to the menu.${RESET}\n"
 
     read -p "  Enter interface (e.g. eth0, ens33): " interface
@@ -184,9 +189,11 @@ iface $interface inet static
 EOF
         
         if [ "$DRY_RUN" = true ]; then
-            dry_run_print "Would append the following configuration to $INTERFACES_FILE:"
+            dry_run_print "Would remove existing blocks for $interface and append the following to $INTERFACES_FILE:"
             echo "$interfaces_content" | sed 's/^/    /'
         else
+            # BUG FIX: Remove existing configuration for this interface to prevent duplicate entries
+            sed -i "/auto $interface/,/dns-nameservers/d" "$INTERFACES_FILE"
             echo "$interfaces_content" >> "$INTERFACES_FILE"
             log_success "Appended configuration to $INTERFACES_FILE"
         fi
@@ -222,7 +229,7 @@ rollback_config() {
     fi
 
     echo -e "  Available Backups:"
-    ls -l "$BACKUP_DIR" | awk '{print $9}' | grep "\.bak\." | nl
+    ls -1 "$BACKUP_DIR" | grep "\.bak\." | nl
     
     local backups=()
     mapfile -t backups < <(ls "$BACKUP_DIR" 2>/dev/null | grep "\.bak\.")
