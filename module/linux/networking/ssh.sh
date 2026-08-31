@@ -33,10 +33,22 @@
 #
 # Usage:
 #   bash ssh.sh              normal interactive run
+#   bash ssh.sh --dry-run    run in simulated mode, safely printing actions
 #   bash ssh.sh --rollback   remove keys/records created by this script
 # ==============================================================================
 
 set -o pipefail
+
+DRY_RUN=false
+DO_ROLLBACK=false
+
+for arg in "$@"; do
+    if [[ "$arg" == "--dry-run" ]]; then
+        DRY_RUN=true
+    elif [[ "$arg" == "--rollback" ]]; then
+        DO_ROLLBACK=true
+    fi
+done
 
 # ----------------------------- UI Colors & Formatting -------------------------
 RED='\033[0;31m'
@@ -71,6 +83,7 @@ log_info()    { echo -e "  ${BLUE}${BOLD}[INFO]${RESET}    $1"; }
 log_success() { echo -e "  ${GREEN}${BOLD}[OK]${RESET}      $1"; }
 log_warn()    { echo -e "  ${YELLOW}${BOLD}[WARN]${RESET}    $1"; }
 log_error()   { echo -e "  ${RED}${BOLD}[ERROR]${RESET}   $1"; }
+dry_run_print() { echo -e "  ${YELLOW}${BOLD}[DRY RUN]${RESET} $1"; }
 
 pause_menu() {
     echo ""
@@ -84,19 +97,35 @@ is_cancel() {
 
 # ----------------------------- Manifest / Rollback engine ---------------------
 
-manifest_init() { : > "$MANIFEST"; }
+manifest_init() {
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_print "Would initialize manifest at $MANIFEST"
+    else
+        : > "$MANIFEST"
+    fi
+}
 
 record() {
     local action="$1"; shift
-    printf '%s\n' "$action|$*" >> "$MANIFEST"
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_print "Would record action '$action' in manifest: $*"
+    else
+        printf '%s\n' "$action|$*" >> "$MANIFEST"
+    fi
 }
 
 do_rollback() {
+    clear
     print_banner
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "  ${YELLOW}${BOLD}[DRY RUN MODE ENABLED - NO CHANGES WILL BE APPLIED]${RESET}"
+        print_separator
+    fi
+
     if [[ ! -s "$MANIFEST" ]]; then
         log_warn "No manifest found at $MANIFEST - nothing to roll back."
         log_info "(A missing or empty manifest means this script has not created anything.)"
-        exit 0
+        return 0
     fi
 
     log_info "Rolling back changes recorded in $MANIFEST ..."
@@ -109,8 +138,13 @@ do_rollback() {
             generated_key)
                 # args = "<private_key_path>"
                 local priv="$args" pub="${args}.pub"
-                [ -f "$pub"  ] && rm -f "$pub"  && log_success "Removed public key: $(basename "$pub")"
-                [ -f "$priv" ] && rm -f "$priv" && log_success "Removed private key: $(basename "$priv")"
+                if [ "$DRY_RUN" = true ]; then
+                    [ -f "$pub" ] && dry_run_print "Would remove public key: $(basename "$pub")"
+                    [ -f "$priv" ] && dry_run_print "Would remove private key: $(basename "$priv")"
+                else
+                    [ -f "$pub"  ] && rm -f "$pub"  && log_success "Removed public key: $(basename "$pub")"
+                    [ -f "$priv" ] && rm -f "$priv" && log_success "Removed private key: $(basename "$priv")"
+                fi
                 ;;
             appended_remote_authorized_keys)
                 log_warn "Manual remote deployment was recorded for: $args"
@@ -124,13 +158,17 @@ do_rollback() {
         esac
     done
 
-    : > "$MANIFEST"
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_print "Would clear manifest at $MANIFEST"
+    else
+        : > "$MANIFEST"
+    fi
     print_separator
     log_success "Rollback complete."
-    exit 0
+    return 0
 }
 
-[[ "${1:-}" == "--rollback" ]] && do_rollback
+[[ "$DO_ROLLBACK" = true ]] && { do_rollback; exit 0; }
 
 # ----------------------------- Validation helpers -----------------------------
 
@@ -204,11 +242,24 @@ generate_ssh_key() {
         log_info "No existing SSH key found."
     fi
 
-    mkdir -p "$HOME/.ssh"
-    chmod 700 "$HOME/.ssh"
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_print "Would create and chmod ~/.ssh directory"
+    else
+        mkdir -p "$HOME/.ssh"
+        chmod 700 "$HOME/.ssh"
+    fi
 
     echo ""
     log_info "Starting ssh-keygen (accept defaults or customize as prompted)..."
+    
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_print "Would run: ssh-keygen -t ed25519 -f $HOME/.ssh/id_ed25519"
+        record generated_key "$HOME/.ssh/id_ed25519"
+        record installed_pkg "openssh-client (via $PKG)" 2>/dev/null || true
+        log_success "[Simulated] New ED25519 key generated and recorded for rollback."
+        return 0
+    fi
+
     if ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519"; then
         record generated_key "$HOME/.ssh/id_ed25519"
         record installed_pkg "openssh-client (via $PKG)" 2>/dev/null || true
@@ -231,6 +282,9 @@ run_core_function() {
     clear
     print_banner
     echo -e "${BLUE}${BOLD}  [Option 1] Core Setup - Package Manager & SSH Keygen${RESET}"
+    if [ "$DRY_RUN" = true ]; then
+        echo -e "  ${YELLOW}${BOLD}[DRY RUN MODE ENABLED - NO CHANGES WILL BE APPLIED]${RESET}"
+    fi
     print_separator
     echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at any prompt to abort.${RESET}"
     echo ""
@@ -239,18 +293,23 @@ run_core_function() {
     detect_package_manager || { pause_menu; return 1; }
 
     # Ensure an ssh client exists (ssh-keygen lives in openssh-client(s)).
-    if ! command -v ssh-keygen >/dev/null 2>&1; then
+    if ! command -v ssh-keygen >/dev/null 2>&1 || [ "$DRY_RUN" = true ]; then
         log_info "Installing OpenSSH client via $PKG..."
-        case $PKG in
-            apt)    sudo apt update && sudo apt install -y openssh-client ;;
-            dnf)    sudo dnf install -y openssh-clients ;;
-            yum)    sudo yum install -y openssh-clients ;;
-            pacman) sudo pacman -Sy --noconfirm openssh ;;
-            zypper) sudo zypper install -y openssh ;;
-        esac
-        command -v ssh-keygen >/dev/null 2>&1 \
-            && log_success "OpenSSH client installed." \
-            || { log_error "openssh install failed."; pause_menu; return 1; }
+        if [ "$DRY_RUN" = true ]; then
+            dry_run_print "Would install openssh-client using $PKG"
+            log_success "OpenSSH client installation simulated."
+        else
+            case $PKG in
+                apt)    sudo apt update && sudo apt install -y openssh-client ;;
+                dnf)    sudo dnf install -y openssh-clients ;;
+                yum)    sudo yum install -y openssh-clients ;;
+                pacman) sudo pacman -Sy --noconfirm openssh ;;
+                zypper) sudo zypper install -y openssh ;;
+            esac
+            command -v ssh-keygen >/dev/null 2>&1 \
+                && log_success "OpenSSH client installed." \
+                || { log_error "openssh install failed."; pause_menu; return 1; }
+        fi
     else
         log_success "ssh-keygen already available."
     fi
@@ -305,19 +364,29 @@ deploy_ssh_key() {
     print_separator
 
     local rc=1
-    if command -v ssh-copy-id >/dev/null 2>&1; then
-        ssh-copy-id -p "$ssh_port" "$ssh_user@$target_address"
-        rc=$?
-    else
-        log_warn "ssh-copy-id not found. Attempting manual copy..."
-        # BUG FIX: '< file' redirection instead of useless-use-of-cat, plus
-        # pipefail-aware exit-code capture.
-        ssh -p "$ssh_port" "$ssh_user@$target_address" \
-            "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" \
-            < "$HOME"/.ssh/id_*.pub
-        rc=$?
-        if [ $rc -eq 0 ]; then
+    if [ "$DRY_RUN" = true ]; then
+        if command -v ssh-copy-id >/dev/null 2>&1; then
+            dry_run_print "Would run: ssh-copy-id -p \"$ssh_port\" \"$ssh_user@$target_address\""
+        else
+            dry_run_print "Would run manual SSH key copy to $ssh_user@$target_address:$ssh_port"
             record appended_remote_authorized_keys "$ssh_user@$target_address:$ssh_port"
+        fi
+        rc=0
+    else
+        if command -v ssh-copy-id >/dev/null 2>&1; then
+            ssh-copy-id -p "$ssh_port" "$ssh_user@$target_address"
+            rc=$?
+        else
+            log_warn "ssh-copy-id not found. Attempting manual copy..."
+            # BUG FIX: '< file' redirection instead of useless-use-of-cat, plus
+            # pipefail-aware exit-code capture.
+            ssh -p "$ssh_port" "$ssh_user@$target_address" \
+                "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys" \
+                < "$HOME"/.ssh/id_*.pub
+            rc=$?
+            if [ $rc -eq 0 ]; then
+                record appended_remote_authorized_keys "$ssh_user@$target_address:$ssh_port"
+            fi
         fi
     fi
 
@@ -469,10 +538,20 @@ while true; do
     clear
     print_banner
     echo -e "${BOLD}  Main Menu:${RESET}"
+
+    local dry_run_status
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_status="${YELLOW}[ON]${RESET}"
+    else
+        dry_run_status="${DIM}[OFF]${RESET}"
+    fi
+
     echo "    1) Run Core Setup (Package Manager & SSH-Keygen)"
     echo "    2) Configure Target and Auto-Deploy SSH Key"
     echo "    3) Manual SSH Key Deployment (uses saved target)"
-    echo "    4) Exit"
+    echo "    4) Rollback Generated SSH Keys & Changes"
+    echo -e "    5) Toggle Dry Run Mode $dry_run_status"
+    echo "    6) Exit"
     print_separator
 
     if [ -n "$TARGET_HOST" ] || [ -n "$TARGET_IP" ] || [ -n "$TARGET_USER" ] || [ -n "$TARGET_PORT" ]; then
@@ -480,17 +559,31 @@ while true; do
         print_separator
     fi
 
-    read -p "  Please choose an option [1-4]: " main_choice
+    read -p "  Please choose an option [1-6]: " main_choice
 
     case $main_choice in
         1) run_core_function ;;
         2) configure_target ;;
         3) deploy_ssh_key ;;
-        4) clear; echo "Exiting script. Goodbye!"; exit 0 ;;
+        4)
+            do_rollback
+            pause_menu
+            ;;
+        5)
+            if [ "$DRY_RUN" = true ]; then
+                DRY_RUN=false
+                log_success "Dry Run mode DISABLED. Changes will be APPLIED."
+            else
+                DRY_RUN=true
+                log_success "Dry Run mode ENABLED. Changes will only be PRINTED."
+            fi
+            sleep 1.5
+            ;;
+        6) clear; echo "Exiting script. Goodbye!"; exit 0 ;;
         *)
             clear
             print_banner
-            log_error "Invalid option. Please select 1, 2, 3, or 4."
+            log_error "Invalid option. Please select a number between 1 and 6."
             sleep 1
             ;;
     esac
