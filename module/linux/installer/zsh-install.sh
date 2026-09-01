@@ -29,7 +29,9 @@
 #   bash zsh-install.sh --rollback  undo everything recorded in the manifest
 # ==============================================================================
 
-set -e
+# NOTE: set -e intentionally omitted. download_font and clone_plugin use
+# '|| log_warn' for graceful fallback; set -e would misfire the ERR trap on
+# those non-fatal failures and abort the entire installation prematurely.
 set -o pipefail
 
 # ----------------------------- UI Colors & Formatting -------------------------
@@ -322,9 +324,12 @@ print_separator
 clone_plugin() {
   local url="$1"
   local dir="$2"
-  local extra_args="${3:-}"
+  # BUG FIX: use an array so args with spaces are word-split correctly by the
+  # shell rather than relying on unsafe unquoted variable expansion.
+  local -a extra_args=()
+  [ -n "${3:-}" ] && IFS=' ' read -ra extra_args <<< "${3}"
   if [ ! -d "$dir" ]; then
-    if git clone $extra_args "$url" "$dir"; then
+    if git clone "${extra_args[@]}" "$url" "$dir"; then
       record cloned_repo "$dir"
       log_success "Cloned $(basename "$dir")"
     else
@@ -350,21 +355,21 @@ print_separator
 
 touch "$ZSHRC"
 
-# Always take a fresh backup before modification to ensure the most recent state is preserved.
-  ZSHRC_BAK="$ZSHRC.bak.$(date +%Y%m%d_%H%M%S)"
-  cp "$ZSHRC" "$ZSHRC_BAK"
-  record backup_file "$ZSHRC_BAK"
-  log_success "Backed up .zshrc -> $(basename "$ZSHRC_BAK")"
+# BUG FIX: removed stray indentation from ZSHRC_BAK line (leftover from a
+# removed if-block). Always take a fresh backup before any modification.
+ZSHRC_BAK="$ZSHRC.bak.$(date +%Y%m%d_%H%M%S)"
+cp "$ZSHRC" "$ZSHRC_BAK"
+record backup_file "$ZSHRC_BAK"
+log_success "Backed up .zshrc -> $(basename "$ZSHRC_BAK")"
 
 PLUGINS_LINE='plugins=(git zsh-autosuggestions zsh-autocomplete zsh-syntax-highlighting)'
 P10K_LINE='source ~/powerlevel10k/powerlevel10k.zsh-theme'
 
-if ! grep -qF "$P10K_LINE" "$ZSHRC"; then
-  echo "$P10K_LINE" >> "$ZSHRC"
-  record appended_line "$P10K_LINE"
-  log_success "Added powerlevel10k theme to .zshrc"
-fi
-
+# BUG FIX: write the plugins= line BEFORE the theme source line.
+# Oh My Zsh requires $ZSH/oh-my-zsh.sh to be sourced before any theme,
+# so the plugins line (part of the OMZ block) must appear first. The old
+# code appended P10K_LINE first, leaving it above the plugins line on fresh
+# installs and breaking theme loading.
 if grep -q "^[[:space:]]*plugins=" "$ZSHRC"; then
   sed -i "s|^plugins=.*|$PLUGINS_LINE|" "$ZSHRC"
   record modified_zshrc "plugins-line-replaced"
@@ -375,18 +380,26 @@ else
   log_success "Added plugins line to .zshrc"
 fi
 
+if ! grep -qF "$P10K_LINE" "$ZSHRC"; then
+  echo "$P10K_LINE" >> "$ZSHRC"
+  record appended_line "$P10K_LINE"
+  log_success "Added powerlevel10k theme to .zshrc"
+fi
+
 ZSH_PATH="$(command -v zsh)"
 CURRENT_USER="${SUDO_USER:-${USER:-$(id -un)}}"
 if [ -n "$ZSH_PATH" ] && [ "$(getent passwd "$CURRENT_USER" | cut -d: -f7)" != "$ZSH_PATH" ]; then
-  if chsh -s "$ZSH_PATH" 2>/dev/null; then
-    PREV_SHELL="$(getent passwd "$CURRENT_USER" | cut -d: -f7)"
-    :
+  # BUG FIX: capture PREV_SHELL BEFORE calling chsh. The old code read the
+  # shell entry after chsh had already changed it, so the rollback manifest
+  # always recorded zsh as the "previous" shell instead of the real one.
+  PREV_SHELL="$(getent passwd "$CURRENT_USER" | cut -d: -f7)"
+  if chsh -s "$ZSH_PATH" 2>/dev/null || sudo chsh -s "$ZSH_PATH" "$CURRENT_USER"; then
+    record changed_shell "$PREV_SHELL"
+    log_success "Default shell set to zsh for $CURRENT_USER"
   else
-    PREV_SHELL="$(getent passwd "$CURRENT_USER" | cut -d: -f7)"
-    sudo chsh -s "$ZSH_PATH" "$CURRENT_USER"
+    log_warn "Could not change default shell automatically."
+    log_info "Run manually: chsh -s $ZSH_PATH"
   fi
-  record changed_shell "$PREV_SHELL"
-  log_success "Default shell set to zsh for $CURRENT_USER"
 else
   log_success "Default shell already zsh - skipping chsh."
 fi

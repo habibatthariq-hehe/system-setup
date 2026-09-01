@@ -67,7 +67,10 @@ BACKUP_DIR="/var/backups/webmail-setup"
 backup_file() {
     local file="$1"
     if [ -f "$file" ]; then
-        local timestamp=$(date +%Y%m%d%H%M%S)
+        # BUG FIX: split local + assignment so command substitution exit code
+        # is not masked by 'local' always returning 0.
+        local timestamp
+        timestamp=$(date +%Y%m%d%H%M%S)
         mkdir -p "$BACKUP_DIR"
         local backup_path="${BACKUP_DIR}/$(basename "$file").bak.${timestamp}"
         if [ "$DRY_RUN" = true ]; then
@@ -90,15 +93,17 @@ do_rollback() {
         return
     fi
 
+    local backups=()
+    # BUG FIX: use the same sorted source for both display (nl) and the array
+    # so the user's selected number always maps to the correct file.
+    mapfile -t backups < <(ls "$BACKUP_DIR" 2>/dev/null | grep "\.bak\." | sort)
+
     echo -e "  Available Backups:"
-    ls -1 "$BACKUP_DIR" | grep "\.bak\." | nl
+    printf '%s\n' "${backups[@]}" | nl
     echo ""
     read -p "  Enter the number of the backup to restore (or 'c' to cancel): " rb_choice
     if is_cancel "$rb_choice"; then return; fi
 
-    local backups=()
-    mapfile -t backups < <(ls "$BACKUP_DIR" 2>/dev/null | grep "\.bak\.")
-    
     if [[ ! "$rb_choice" =~ ^[0-9]+$ ]] || [ "$rb_choice" -lt 1 ] || [ "$rb_choice" -gt "${#backups[@]}" ]; then
         log_error "Invalid selection."
         return
@@ -108,10 +113,14 @@ do_rollback() {
     log_info "Selected backup: $selected_file"
     
     # Map backup filenames back to original paths
+    # BUG FIX: added Roundcube entries which were previously missing,
+    # making Roundcube config backups unrestorable.
     local target=""
-    if [[ "$selected_file" == *"postfix"* ]]; then target="/etc/postfix/main.cf"
-    elif [[ "$selected_file" == *"10-mail.conf"* ]]; then target="/etc/dovecot/conf.d/10-mail.conf"
-    elif [[ "$selected_file" == *"10-auth.conf"* ]]; then target="/etc/dovecot/conf.d/10-auth.conf"
+    if   [[ "$selected_file" == *"main.cf"* ]];       then target="/etc/postfix/main.cf"
+    elif [[ "$selected_file" == *"10-mail.conf"* ]];  then target="/etc/dovecot/conf.d/10-mail.conf"
+    elif [[ "$selected_file" == *"10-auth.conf"* ]];  then target="/etc/dovecot/conf.d/10-auth.conf"
+    elif [[ "$selected_file" == *"config.inc.php"* ]]; then target="/etc/roundcube/config.inc.php"
+    elif [[ "$selected_file" == *"roundcube"* ]];     then target="/etc/apache2/conf-available/roundcube.conf"
     fi
 
     if [ -n "$target" ]; then
@@ -149,13 +158,23 @@ setup_webmail() {
 
     # Step 1: Hostname & Domain
     echo -e "${CYAN}${BOLD}  [Step 1/5] Hostname Configuration${RESET}"
+    local mail_hostname mail_domain
     read -p "  Enter Mail Hostname (e.g. mail.example.com) [mail.lks.id]: " mail_hostname
     [ -z "$mail_hostname" ] && mail_hostname="mail.lks.id"
     if is_cancel "$mail_hostname"; then return; fi
+    # BUG FIX: basic format check - hostname must contain at least one dot
+    if [[ "$mail_hostname" != *.* ]]; then
+        log_error "Hostname must be a fully qualified domain name (e.g. mail.example.com)."
+        return 1
+    fi
 
     read -p "  Enter Mail Domain (e.g. example.com) [lks.id]: " mail_domain
     [ -z "$mail_domain" ] && mail_domain="lks.id"
     if is_cancel "$mail_domain"; then return; fi
+    if [[ "$mail_domain" != *.* ]]; then
+        log_error "Domain must contain at least one dot (e.g. example.com)."
+        return 1
+    fi
 
     if [ "$DRY_RUN" = true ]; then
         dry_run_print "Would set hostname to $mail_hostname"
@@ -175,11 +194,21 @@ setup_webmail() {
     if [ "$DRY_RUN" = true ]; then
         dry_run_print "Would install packages: $pkgs"
     else
-        log_info "Updating repositories..."
-        $PKG_MGR update -y >/dev/null 2>&1
+        log_info "Updating package lists..."
+        case "$PKG_MGR" in
+            apt) apt-get update -qq > /dev/null 2>&1 ;;
+            dnf) dnf makecache -q  > /dev/null 2>&1 ;;
+        esac
         log_info "Installing packages (this may take a while)..."
-        $PKG_MGR install -y $pkgs
-        if [ $? -eq 0 ]; then log_success "Packages installed successfully."; else log_error "Installation failed."; return 1; fi
+        local install_rc=0
+        # shellcheck disable=SC2086  # word-split of $pkgs is intentional
+        $PKG_MGR install -y $pkgs || install_rc=$?
+        if [ $install_rc -eq 0 ]; then
+            log_success "Packages installed successfully."
+        else
+            log_error "Installation failed."
+            return 1
+        fi
     fi
 
     # Step 3: Postfix Setup
