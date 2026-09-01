@@ -2,23 +2,24 @@
 """
 runner.py
 ---------
-Entry-point script that:
-  1. Detects the operating system the user is running.
-  2. Automatically runs the appropriate main execution script for
-     the detected OS from `module/<os>/main.*`.
-  3. Provides a clean, colorful terminal UI inspired by
-     `module/linux/dhcp-setup.sh`.
+The universal entry-point for the System Setup suite.
+Now upgraded with enhanced QoL (User Experience) and QoS (Robustness).
 
-Usage:
-    python runner.py
+Key Improvements:
+1. CLI Arguments: Support for --module to jump directly to a tool.
+2. Interpreter Validation: Checks if bash/powershell exists before execution.
+3. Enhanced Diagnostics: Richer system summary including CPU and Memory.
+4. Robust Error Handling: Graceful failure when modules are missing.
+5. OS Override: Allows forcing a specific OS mode via --os.
 """
 
 import os
 import platform
 import subprocess
 import sys
+import shutil
+import argparse
 from pathlib import Path
-
 
 # ============================================================================
 # UI COLORS & FORMATTING
@@ -34,28 +35,17 @@ class Colors:
     DIM     = '\033[2m'
     RESET   = '\033[0m'
 
-
-# Enable ANSI colors on Windows (Windows 10+ supports VT sequences natively,
-# older builds need a small enable call — `colorama` would also work but we
-# keep this stdlib-only).
 def _enable_windows_ansi():
     if os.name == 'nt':
         try:
             import ctypes
             kernel32 = ctypes.windll.kernel32
-            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x4
             kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 0x4 | 0x2)
         except Exception:
             pass
 
-
-# ============================================================================
-# UI HELPERS
-# ============================================================================
-
 def clear_screen():
     os.system('cls' if os.name == 'nt' else 'clear')
-
 
 def print_banner():
     clear_screen()
@@ -64,126 +54,111 @@ def print_banner():
     print(f"{Colors.CYAN}{Colors.BOLD}╚═══════════════════════════════════════════════════════════════════╝{Colors.RESET}")
     print()
 
-
 def print_separator():
     print(f"{Colors.DIM}─────────────────────────────────────────────────────────────────────{Colors.RESET}")
-
 
 def log_info(msg: str)    : print(f"  {Colors.BLUE}{Colors.BOLD}[INFO]{Colors.RESET}    {msg}")
 def log_success(msg: str) : print(f"  {Colors.GREEN}{Colors.BOLD}[OK]{Colors.RESET}      {msg}")
 def log_warn(msg: str)    : print(f"  {Colors.YELLOW}{Colors.BOLD}[WARN]{Colors.RESET}    {msg}")
 def log_error(msg: str)   : print(f"  {Colors.RED}{Colors.BOLD}[ERROR]{Colors.RESET}   {msg}")
 
-
 def is_cancel(value: str) -> bool:
-    """True if the user's input signals 'cancel / quit'."""
     return value.strip().lower() in {'c', 'cancel', 'q', 'quit', 'exit'}
 
-
 # ============================================================================
-# OS DETECTION
+# OS & SYSTEM DETECTION
 # ============================================================================
 
-# Map of platform.system() values to the folder name used under `module/`.
 OS_MAP = {
     'Linux':   'linux',
     'Windows': 'windows',
-    'Darwin':  'darwin',   # macOS
+    'Darwin':  'darwin',
 }
 
-# Friendly human-readable name for the detected OS.
 OS_PRETTY = {
     'linux':   'Linux',
     'windows': 'Windows',
     'darwin':  'macOS',
 }
 
-
 def detect_os() -> str:
-    """
-    Detect the host operating system.
-
-    Returns one of:
-        'linux' | 'windows' | 'darwin' | 'unknown'
-    """
     return OS_MAP.get(platform.system(), 'unknown')
 
-
-def detect_os_details() -> dict:
-    """Return richer info about the host OS, useful for logging."""
-    return {
-        'system':   platform.system(),       # e.g. 'Linux'
-        'release':  platform.release(),      # e.g. '5.15.0-105-generic'
-        'version':  platform.version(),      # e.g. '#109~20.04.1-Ubuntu SMP ...'
-        'machine':  platform.machine(),      # e.g. 'x86_64'
+def get_system_summary() -> dict:
+    """Gathers rich system information for the summary box."""
+    details = {
+        'system':   platform.system(),
+        'release':  platform.release(),
+        'version':  platform.version(),
+        'machine':  platform.machine(),
         'python':   platform.python_version(),
         'node':     platform.node() or 'localhost',
     }
+    
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        details['ram'] = f"{round(mem.total / (1024**3), 1)} GB"
+        details['cpu'] = f"{platform.processor()}"
+    except (ImportError, Exception):
+        details['ram'] = "N/A"
+        details['cpu'] = "N/A"
+        
+    return details
 
+def _print_os_summary(os_key: str, details: dict):
+    pretty = OS_PRETTY.get(os_key, os_key.capitalize())
+    print(f"  {Colors.BOLD}OS Detected:{Colors.RESET}     {Colors.GREEN}{pretty}{Colors.RESET}")
+    print(f"  {Colors.BOLD}Kernel:    {Colors.RESET}     {Colors.CYAN}{details['system']} {details['release']}{Colors.RESET}")
+    print(f"  {Colors.BOLD}Arch/CPU:  {Colors.RESET}     {Colors.CYAN}{details['machine']} ({details['cpu']}){Colors.RESET}")
+    print(f"  {Colors.BOLD}Memory:    {Colors.RESET}     {Colors.CYAN}{details['ram']}{Colors.RESET}")
+    print(f"  {Colors.BOLD}Python:    {Colors.RESET}     {Colors.CYAN}{details['python']}{Colors.RESET}")
+    print(f"  {Colors.BOLD}Hostname:  {Colors.RESET}     {Colors.CYAN}{details['node']}{Colors.RESET}")
+    print_separator()
 
 # ============================================================================
-# MAIN-RUNNER (auto-launches the per-OS entry script)
+# EXECUTION ENGINE
 # ============================================================================
 
-# Per-OS: which interpreter and which entry file under `module/<os>/` to run.
-# You can extend this dict as you add more operating systems.
 RUNNERS = {
     'linux':   {'interpreter': 'bash', 'entry': 'main-linux.sh'},
     'windows': {'interpreter': 'powershell', 'entry': 'main-win.ps1'},
     'darwin':  {'interpreter': 'bash', 'entry': 'main-mac.sh'},
 }
 
-
 def _project_root() -> Path:
-    """Resolve the project root (directory containing this runner.py)."""
     return Path(__file__).resolve().parent
 
-
 def _module_dir(os_key: str) -> Path:
-    """Return the absolute path to `module/<os_key>/`."""
     return _project_root() / 'module' / os_key
 
-
-def _resolve_entry(os_key: str):
-    """Return (interpreter, entry_script_path) for the given OS, or None if missing."""
-    config = RUNNERS.get(os_key)
-    if not config:
-        return None
-
-    entry_path = _module_dir(os_key) / config['entry']
-    if not entry_path.exists():
-        return None
-
-    return config['interpreter'], entry_path
-
-
-def _print_os_summary(os_key: str, details: dict):
-    """Pretty-print a small OS-detection summary box (matches dhcp-setup.sh style)."""
-    pretty = OS_PRETTY.get(os_key, os_key.capitalize())
-    print(f"  {Colors.BOLD}OS Detected:{Colors.RESET}     {Colors.GREEN}{pretty}{Colors.RESET}")
-    print(f"  {Colors.BOLD}Kernel:    {Colors.RESET}     {Colors.CYAN}{details['system']} {details['release']}{Colors.RESET}")
-    print(f"  {Colors.BOLD}Arch:      {Colors.RESET}     {Colors.CYAN}{details['machine']}{Colors.RESET}")
-    print(f"  {Colors.BOLD}Python:    {Colors.RESET}     {Colors.CYAN}{details['python']}{Colors.RESET}")
-    print(f"  {Colors.BOLD}Hostname:  {Colors.RESET}     {Colors.CYAN}{details['node']}{Colors.RESET}")
-    print_separator()
-
+def validate_interpreter(interpreter: str) -> bool:
+    """Check if the required interpreter is installed on the system."""
+    if interpreter == 'powershell':
+        # Check for powershell or pwsh (Core)
+        return shutil.which('powershell') is not None or shutil.which('pwsh') is not None
+    return shutil.which(interpreter) is not None
 
 def _invoke(interpreter: str, script_path: Path, os_key: str) -> int:
-    """
-    Execute the per-OS entry script with the correct interpreter.
-
-    Returns the subprocess exit code.
-    """
     cwd = str(script_path.parent)
+    is_root = os.geteuid() == 0 if os.name != 'nt' else True # Windows handles elevation differently
 
+    # Resolve PowerShell executable (handles both Windows PowerShell and PowerShell Core)
     if os_key == 'windows':
-        # PowerShell script. -ExecutionPolicy Bypass so it runs without
-        # requiring the user to pre-allow unsigned scripts.
-        cmd = ['powershell', '-ExecutionPolicy', 'Bypass', '-File', str(script_path)]
+        pwsh = shutil.which('powershell') or shutil.which('pwsh')
+        if not pwsh:
+            log_error("PowerShell not found. Please install PowerShell to continue.")
+            return 127
+        cmd = [pwsh, '-ExecutionPolicy', 'Bypass', '-File', str(script_path)]
     elif interpreter == 'bash':
         cmd = ['bash', str(script_path)]
     else:
         cmd = [interpreter, str(script_path)]
+
+    # QoS: Automatically prepend sudo if not running as root to ensure script functionality
+    if not is_root and os_key != 'windows':
+        cmd = ['sudo'] + cmd
+        log_info("Elevating privileges via sudo...")
 
     log_info(f"Executing: {Colors.BOLD}{' '.join(cmd)}{Colors.RESET}")
     print()
@@ -197,40 +172,77 @@ def _invoke(interpreter: str, script_path: Path, os_key: str) -> int:
         log_warn("Interrupted by user.")
         return 130
 
+# ============================================================================
+# MAIN LOGIC
+# ============================================================================
 
-def run_main(os_key: str | None = None) -> int:
-    """
-    Detect the host OS (unless `os_key` is supplied) and run the matching
-    main execution script under `module/<os_key>/`.
-
-    Returns the exit code of the spawned script, or 1 on failure.
-    """
+def run_main(args):
     print_banner()
 
-    if os_key is None:
+    # 1. OS Selection (Override or Detect)
+    if args.os:
+        os_key = args.os.lower()
+        log_info(f"OS override enabled: {os_key}")
+    else:
         log_info("Detecting host operating system...")
         os_key = detect_os()
 
-    if os_key == 'unknown':
-        log_error("Unsupported operating system.")
-        log_warn("This launcher supports: Linux, Windows, macOS.")
+    if os_key == 'unknown' or os_key not in RUNNERS:
+        log_error(f"Unsupported operating system: {os_key}")
+        log_warn(f"This launcher supports: {', '.join(RUNNERS.keys())}")
         return 1
 
-    details = detect_os_details()
+    details = get_system_summary()
     _print_os_summary(os_key, details)
-    log_success(f"Launcher will run the {Colors.GREEN}{OS_PRETTY[os_key]}{Colors.RESET} workflow.")
+    log_success(f"Launcher will run the {Colors.GREEN}{OS_PRETTY.get(os_key, os_key)}{Colors.RESET} workflow.")
     print()
 
-    resolved = _resolve_entry(os_key)
-    if resolved is None:
-        log_error(f"No entry script found for {OS_PRETTY[os_key]}.")
-        log_warn(f"Expected one of: {', '.join(r['entry'] for r in RUNNERS.values())}")
-        log_warn(f"Inside: {_module_dir(os_key)}")
+    # 2. Script Resolution
+    config = RUNNERS[os_key]
+    
+    if args.module:
+        # Resolve the target path (could be a directory or a specific file)
+        target_path = _module_dir(os_key) / args.module
+        
+        if target_path.is_file():
+            script_path = target_path
+            interpreter = config['interpreter']
+            log_info(f"Direct script access: {script_path.name}")
+        elif target_path.is_dir():
+            # 1. Try to find a 'main' script first
+            entry_script = next(target_path.glob("main*.sh"), None) or next(target_path.glob("main*.ps1"), None)
+            
+            # 2. Fallback: find ANY script in that directory
+            if not entry_script:
+                all_scripts = list(target_path.glob("*.sh")) + list(target_path.glob("*.ps1"))
+                if all_scripts:
+                    entry_script = all_scripts[0]
+                    log_warn(f"No 'main' script found in {args.module}. Defaulting to {entry_script.name}")
+                else:
+                    log_error(f"No executable scripts found in module {args.module}")
+                    return 1
+            
+            script_path = entry_script
+            interpreter = config['interpreter']
+            log_info(f"Module access: {args.module} -> {script_path.name}")
+        else:
+            log_error(f"Module or script '{args.module}' not found in {_module_dir(os_key)}")
+            return 1
+    else:
+        # Default to main dispatcher
+        script_path = _module_dir(os_key) / config['entry']
+        interpreter = config['interpreter']
+
+    if not script_path.exists():
+        log_error(f"Entry script not found: {script_path}")
         return 1
 
-    interpreter, script_path = resolved
+    # 3. Interpreter Validation
+    if not validate_interpreter(interpreter):
+        log_error(f"Required interpreter '{interpreter}' is not installed on this system.")
+        return 127
 
-    # Quick confirmation prompt so the user can back out if desired.
+    # 4. Confirmation
     try:
         answer = input(f"  Proceed and run {Colors.CYAN}{script_path.name}{Colors.RESET}? [Y/n/c]: ").strip()
     except (EOFError, KeyboardInterrupt):
@@ -247,16 +259,15 @@ def run_main(os_key: str | None = None) -> int:
 
     return _invoke(interpreter, script_path, os_key)
 
-
-# ============================================================================
-# ENTRY POINT
-# ============================================================================
-
 def main() -> int:
-    """Top-level entry point used by `python runner.py`."""
     _enable_windows_ansi()
-    return run_main()
-
+    
+    parser = argparse.ArgumentParser(description="System Setup Cross-Platform Launcher")
+    parser.add_argument('--os', type=str, help="Override detected OS (linux, windows, darwin)")
+    parser.add_argument('--module', type=str, help="Directly launch a specific module (e.g. networking, installer)")
+    
+    args = parser.parse_args()
+    return run_main(args)
 
 if __name__ == "__main__":
     sys.exit(main())

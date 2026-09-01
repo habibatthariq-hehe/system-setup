@@ -350,17 +350,11 @@ print_separator
 
 touch "$ZSHRC"
 
-# BUG FIX: take the backup BEFORE any modification, not after appending the
-# p10k theme line.
-if ! ls "$ZSHRC.bak."* >/dev/null 2>&1; then
+# Always take a fresh backup before modification to ensure the most recent state is preserved.
   ZSHRC_BAK="$ZSHRC.bak.$(date +%Y%m%d_%H%M%S)"
   cp "$ZSHRC" "$ZSHRC_BAK"
   record backup_file "$ZSHRC_BAK"
   log_success "Backed up .zshrc -> $(basename "$ZSHRC_BAK")"
-else
-  log_info "Existing .zshrc backup found - keeping the oldest one as rollback point."
-  ZSHRC_BAK=$(ls "$ZSHRC.bak."* | head -1)
-fi
 
 PLUGINS_LINE='plugins=(git zsh-autosuggestions zsh-autocomplete zsh-syntax-highlighting)'
 P10K_LINE='source ~/powerlevel10k/powerlevel10k.zsh-theme'
@@ -371,7 +365,7 @@ if ! grep -qF "$P10K_LINE" "$ZSHRC"; then
   log_success "Added powerlevel10k theme to .zshrc"
 fi
 
-if grep -q "^plugins=" "$ZSHRC"; then
+if grep -q "^[[:space:]]*plugins=" "$ZSHRC"; then
   sed -i "s|^plugins=.*|$PLUGINS_LINE|" "$ZSHRC"
   record modified_zshrc "plugins-line-replaced"
   log_success "Updated plugins line in .zshrc"
