@@ -11,7 +11,7 @@
 #     silently continued -> now defaults to first manager with a warning.
 #   * `select` loop could spin forever on garbage input in some shells ->
 #     bounded with an explicit retry counter and cancel keyword ('c').
-#   * ssh-keygen ran non-interactively inside a function whose failure was
+#   * ssh-keygen ran non-interactively (-N "") but its failure was
 #     swallowed; now checked explicitly.
 #   * Manual key-copy fallback used `cat file | ssh ...` (useless use of cat
 #     and no exit-code check) -> now uses `< file` redirection and verifies.
@@ -253,21 +253,21 @@ generate_ssh_key() {
     log_info "Starting ssh-keygen (accept defaults or customize as prompted)..."
     
     if [ "$DRY_RUN" = true ]; then
-        dry_run_print "Would run: ssh-keygen -t ed25519 -f $HOME/.ssh/id_ed25519"
+        dry_run_print "Would run: ssh-keygen -t ed25519 -f $HOME/.ssh/id_ed25519 -N ''"
         record generated_key "$HOME/.ssh/id_ed25519"
         record installed_pkg "openssh-client (via $PKG)" 2>/dev/null || true
         log_success "[Simulated] New ED25519 key generated and recorded for rollback."
         return 0
     fi
 
-    if ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519"; then
+    if ssh-keygen -t ed25519 -f "$HOME/.ssh/id_ed25519" -N "" ""; then
         record generated_key "$HOME/.ssh/id_ed25519"
         record installed_pkg "openssh-client (via $PKG)" 2>/dev/null || true
         log_success "New ED25519 key generated and recorded for rollback."
     else
         # Fallback to RSA if ed25519 unsupported (very old ssh-keygen)
         log_warn "ED25519 generation failed - falling back to RSA 4096."
-        if ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/id_rsa"; then
+        if ssh-keygen -t rsa -b 4096 -f "$HOME/.ssh/id_rsa" -N "" ""; then
             record generated_key "$HOME/.ssh/id_rsa"
             log_success "New RSA-4096 key generated and recorded for rollback."
         else
@@ -539,7 +539,7 @@ while true; do
     print_banner
     echo -e "${BOLD}  Main Menu:${RESET}"
 
-    local dry_run_status
+    dry_run_status=""
     if [ "$DRY_RUN" = true ]; then
         dry_run_status="${YELLOW}[ON]${RESET}"
     else

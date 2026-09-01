@@ -138,18 +138,19 @@ backup_file() {
 
 install_dnsmasq() {
     log_info "Installing DNSMASQ using ${PKG_MANAGER}..."
+    local install_rc=0
     case "$PKG_MANAGER" in
         apt-get)
-            apt-get update -y && apt-get install -y dnsmasq dnsutils ;;
+            apt-get update -y && apt-get install -y dnsmasq dnsutils || install_rc=$? ;;
         dnf)
-            dnf install -y dnsmasq bind-utils ;;
+            dnf install -y dnsmasq bind-utils || install_rc=$? ;;
         pacman)
-            pacman -Sy --noconfirm dnsmasq bind-tools ;;
+            pacman -Sy --noconfirm dnsmasq bind-tools || install_rc=$? ;;
         zypper)
-            zypper --non-interactive install dnsmasq bind-utils ;;
+            zypper --non-interactive install dnsmasq bind-utils || install_rc=$? ;;
     esac
 
-    if [ $? -eq 0 ]; then
+    if [ $install_rc -eq 0 ]; then
         log_success "DNSMASQ installed successfully."
     else
         log_error "Failed to install DNSMASQ."
@@ -158,18 +159,19 @@ install_dnsmasq() {
 
 install_bind9() {
     log_info "Installing BIND9 using ${PKG_MANAGER}..."
+    local install_rc=0
     case "$PKG_MANAGER" in
         apt-get)
-            apt-get update -y && apt-get install -y $BIND_PKG ;;
+            apt-get update -y && apt-get install -y $BIND_PKG || install_rc=$? ;;
         dnf)
-            dnf install -y $BIND_PKG ;;
+            dnf install -y $BIND_PKG || install_rc=$? ;;
         pacman)
-            pacman -Sy --noconfirm $BIND_PKG ;;
+            pacman -Sy --noconfirm $BIND_PKG || install_rc=$? ;;
         zypper)
-            zypper --non-interactive install $BIND_PKG ;;
+            zypper --non-interactive install $BIND_PKG || install_rc=$? ;;
     esac
 
-    if [ $? -eq 0 ]; then
+    if [ $install_rc -eq 0 ]; then
         log_success "BIND9 installed successfully."
     else
         log_error "Failed to install BIND9."
@@ -600,8 +602,16 @@ rollback_config() {
     if [ "$restored" -eq 1 ]; then
         read -p "  Restart DNS service now? [Y/n]: " restart_svc
         if [[ ! "$restart_svc" =~ ^(n|N|no|No)$ ]]; then
-            systemctl restart "$BIND_SERVICE" 2>/dev/null && log_success "Restarted ${BIND_SERVICE}"
-            systemctl restart "$DNSMASQ_SERVICE" 2>/dev/null && log_success "Restarted ${DNSMASQ_SERVICE}"
+            # BUG FIX: only restart services that are actually installed/active
+            # to avoid spurious errors when only one backend was configured.
+            if systemctl list-unit-files "${BIND_SERVICE}.service" &>/dev/null && \
+               systemctl is-enabled "$BIND_SERVICE" &>/dev/null; then
+                systemctl restart "$BIND_SERVICE" 2>/dev/null && log_success "Restarted ${BIND_SERVICE}"
+            fi
+            if systemctl list-unit-files "${DNSMASQ_SERVICE}.service" &>/dev/null && \
+               systemctl is-enabled "$DNSMASQ_SERVICE" &>/dev/null; then
+                systemctl restart "$DNSMASQ_SERVICE" 2>/dev/null && log_success "Restarted ${DNSMASQ_SERVICE}"
+            fi
         fi
     else
         log_error "Invalid selection."

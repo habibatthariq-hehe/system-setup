@@ -543,11 +543,15 @@ apply_nft() {
     # DMZ-initiated connections into LAN are dropped.
     if [ -n "$dmz" ]; then
         nft add chain ip nat_tool forward '{ type filter hook forward priority filter ; policy accept ; }' || true
-        local d
+        local d l
         for d in $dmz; do
             nft add rule ip nat_tool forward iifname "$d" oifname "$wan" accept || true   # DMZ -> WAN ok
-            nft add rule ip nat_tool forward iifname "$lan" oifname "$d" drop 2>/dev/null || true  # LAN -> DMZ blocked
-            nft add rule ip nat_tool forward iifname "$d" oifname "$lan" drop 2>/dev/null || true  # DMZ -> LAN blocked
+            # BUG FIX: loop over every LAN interface; using $lan directly only
+            # matches the first word when multiple LAN interfaces are selected.
+            for l in $lan; do
+                nft add rule ip nat_tool forward iifname "$l" oifname "$d" drop 2>/dev/null || true  # LAN -> DMZ blocked
+                nft add rule ip nat_tool forward iifname "$d" oifname "$l" drop 2>/dev/null || true  # DMZ -> LAN blocked
+            done
         done
     fi
 
@@ -594,19 +598,23 @@ apply_ipt() {
     fi
 
     # ---- DMZ policy: out to WAN allowed; isolated from LAN both ways ----
+    # BUG FIX: loop over every LAN interface; using $lan directly in a single
+    # iptables -i rule only matched the first word when multiple were selected.
     if [ -n "$dmz" ] && [ -n "$lan" ]; then
         for d in $dmz; do
             iptables -D FORWARD -i "$d" -o "$wan" -j ACCEPT 2>/dev/null || true
             iptables -A FORWARD -i "$d" -o "$wan" -j ACCEPT || true
             record ipt_rule "-D FORWARD -i $d -o $wan -j ACCEPT"
 
-            iptables -D FORWARD -i "$lan" -o "$d" -j DROP 2>/dev/null || true
-            iptables -A FORWARD -i "$lan" -o "$d" -j DROP || true
-            record ipt_rule "-D FORWARD -i $lan -o $d -j DROP"
+            for l in $lan; do
+                iptables -D FORWARD -i "$l" -o "$d" -j DROP 2>/dev/null || true
+                iptables -A FORWARD -i "$l" -o "$d" -j DROP || true
+                record ipt_rule "-D FORWARD -i $l -o $d -j DROP"
 
-            iptables -D FORWARD -i "$d" -o "$lan" -j DROP 2>/dev/null || true
-            iptables -A FORWARD -i "$d" -o "$lan" -j DROP || true
-            record ipt_rule "-D FORWARD -i $d -o $lan -j DROP"
+                iptables -D FORWARD -i "$d" -o "$l" -j DROP 2>/dev/null || true
+                iptables -A FORWARD -i "$d" -o "$l" -j DROP || true
+                record ipt_rule "-D FORWARD -i $d -o $l -j DROP"
+            done
         done
     elif [ -n "$dmz" ]; then
         for d in $dmz; do

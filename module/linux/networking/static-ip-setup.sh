@@ -41,6 +41,31 @@ is_cancel() {
     [[ "$val" =~ ^(c|cancel|C|CANCEL|q|quit|Q|QUIT|exit|EXIT)$ ]]
 }
 
+# Basic IPv4 validation (0-255 per octet)
+is_valid_ipv4() {
+    local ip="$1"
+    [[ "$ip" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+    local o
+    for o in "${BASH_REMATCH[@]:1}"; do
+        (( o <= 255 )) || return 1
+    done
+    return 0
+}
+
+# Convert CIDR prefix length (0-32) to dotted-decimal netmask
+cidr_to_netmask() {
+    local cidr="$1"
+    local mask=0 i
+    for (( i=0; i<cidr; i++ )); do
+        mask=$(( (mask >> 1) | 0x80000000 ))
+    done
+    printf '%d.%d.%d.%d' \
+        $(( (mask >> 24) & 255 )) \
+        $(( (mask >> 16) & 255 )) \
+        $(( (mask >>  8) & 255 )) \
+        $(( mask & 255 ))
+}
+
 pause_and_clear() {
     echo ""
     read -p "  Press [Enter] to return to the main menu..." _
@@ -83,13 +108,27 @@ set_static_ip() {
     if is_cancel "$interface"; then return; fi
     if [ -z "$interface" ]; then log_error "Interface cannot be empty."; return; fi
 
-    read -p "  Enter IP Address (e.g. 192.168.1.100/24): " ip_address
-    if is_cancel "$ip_address"; then return; fi
+    # BUG FIX: validate IP address, gateway format before accepting input
+    local ip_address
+    while true; do
+        read -p "  Enter IP Address (e.g. 192.168.1.100/24): " ip_address
+        if is_cancel "$ip_address"; then return; fi
+        local ip_part="${ip_address%/*}"
+        if is_valid_ipv4 "$ip_part"; then break; fi
+        log_error "Invalid IP address format. Use format: 192.168.1.100 or 192.168.1.100/24"
+    done
 
-    read -p "  Enter Gateway (e.g. 192.168.1.1): " gateway
-    if is_cancel "$gateway"; then return; fi
+    local gateway
+    while true; do
+        read -p "  Enter Gateway (e.g. 192.168.1.1): " gateway
+        if is_cancel "$gateway"; then return; fi
+        if is_valid_ipv4 "$gateway"; then break; fi
+        log_error "Invalid gateway IP address."
+    done
 
-    read -p "  Enter DNS Servers (comma separated, e.g. 8.8.8.8,1.1.1.1): " dns
+    local dns
+    read -p "  Enter DNS Servers (comma separated, e.g. 8.8.8.8,1.1.1.1): "
+    dns="$REPLY"
     if is_cancel "$dns"; then return; fi
 
     echo -e "\n  ${YELLOW}${BOLD}--- Configuration Review ---${RESET}"
@@ -104,7 +143,10 @@ set_static_ip() {
         return
     fi
 
-    local timestamp=$(date +%Y%m%d%H%M%S)
+    # BUG FIX: declare local first, then assign, so the exit code of
+    # the command substitution is not masked by 'local' returning 0.
+    local timestamp
+    timestamp=$(date +%Y%m%d%H%M%S)
     
     if [ "$DRY_RUN" = true ]; then
         dry_run_print "Would create backup directory: $BACKUP_DIR"
@@ -172,28 +214,35 @@ EOF
 
         local ip_only="${ip_address%/*}"
         local cidr="${ip_address#*/}"
-        if [ "$ip_only" == "$cidr" ]; then 
+        if [ "$ip_only" == "$cidr" ]; then
             cidr="24"
             log_warn "No CIDR provided, defaulting to /24"
         fi
-        
+        # BUG FIX: convert CIDR to dotted netmask; ifupdown needs a
+        # separate 'netmask' line and a plain IP on 'address'.
+        local netmask
+        netmask=$(cidr_to_netmask "$cidr")
+
         local interfaces_content
-        read -r -d '' interfaces_content <<EOF
+        read -r -d '' interfaces_content <<EOF || true
 
 # Added by static-ip-setup.sh
 auto $interface
 iface $interface inet static
-    address $ip_address
+    address $ip_only
+    netmask $netmask
     gateway $gateway
     dns-nameservers ${dns//,/ }
 EOF
-        
+
         if [ "$DRY_RUN" = true ]; then
             dry_run_print "Would remove existing blocks for $interface and append the following to $INTERFACES_FILE:"
             echo "$interfaces_content" | sed 's/^/    /'
         else
-            # BUG FIX: Remove existing configuration for this interface to prevent duplicate entries
-            sed -i "/auto $interface/,/dns-nameservers/d" "$INTERFACES_FILE"
+            # BUG FIX: escape dots in interface name before using as sed regex
+            # (e.g. eth0.1 has a '.' that matches any char without escaping).
+            local iface_escaped="${interface//./\\.}"
+            sed -i "/auto ${iface_escaped}/,/dns-nameservers/d" "$INTERFACES_FILE"
             echo "$interfaces_content" >> "$INTERFACES_FILE"
             log_success "Appended configuration to $INTERFACES_FILE"
         fi

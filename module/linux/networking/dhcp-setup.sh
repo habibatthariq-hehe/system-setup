@@ -185,25 +185,26 @@ install_dhcp() {
         return
     fi
 
+    local install_rc=0
     case "$PKG_MGR" in
         apt)
-            apt update && apt install -y "$DHCP_PKG"
+            apt update && apt install -y "$DHCP_PKG" || install_rc=$?
             ;;
         dnf)
-            dnf install -y "$DHCP_PKG"
+            dnf install -y "$DHCP_PKG" || install_rc=$?
             ;;
         yum)
-            yum install -y "$DHCP_PKG"
+            yum install -y "$DHCP_PKG" || install_rc=$?
             ;;
         pacman)
-            pacman -Sy --noconfirm "$DHCP_PKG"
+            pacman -Sy --noconfirm "$DHCP_PKG" || install_rc=$?
             ;;
         zypper)
-            zypper install -y "$DHCP_PKG"
+            zypper install -y "$DHCP_PKG" || install_rc=$?
             ;;
     esac
 
-    if [ $? -eq 0 ]; then
+    if [ $install_rc -eq 0 ]; then
         log_success "DHCP Server ($DHCP_PKG) installed successfully!"
     else
         log_error "Installation failed. Check the output above for details."
@@ -803,15 +804,15 @@ rollback_config() {
     local backups=()
 
     # Scan dhcpd.conf backups
-    if ls ${DHCPD_CONF}.bak.* 1>/dev/null 2>&1; then
-        for f in ${DHCPD_CONF}.bak.*; do
+    if ls "${DHCPD_CONF}".bak.* 1>/dev/null 2>&1; then
+        for f in "${DHCPD_CONF}".bak.*; do
             backups+=("$f")
         done
     fi
 
     # Scan interface config backups
-    if [ -n "$IFACE_CONFIG_FILE" ] && ls ${IFACE_CONFIG_FILE}.bak.* 1>/dev/null 2>&1; then
-        for f in ${IFACE_CONFIG_FILE}.bak.*; do
+    if [ -n "$IFACE_CONFIG_FILE" ] && ls "${IFACE_CONFIG_FILE}".bak.* 1>/dev/null 2>&1; then
+        for f in "${IFACE_CONFIG_FILE}".bak.*; do
             backups+=("$f")
         done
     fi
@@ -822,7 +823,7 @@ rollback_config() {
     fi
 
     # Sort backups by timestamp (newest first)
-    IFS=$'\n' backups_sorted=($(printf '%s\n' "${backups[@]}" | sort -r)); unset IFS
+    mapfile -t backups_sorted < <(printf '%s\n' "${backups[@]}" | sort -r)
 
     echo -e "  Available backups (newest first):"
     echo ""
@@ -1070,7 +1071,7 @@ add_subnet_to_existing() {
     print_banner
     echo -e "${BLUE}${BOLD}  [Option 10] Add Subnet(s) to Existing Configuration${RESET}"
     print_separator
-    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at ANY prompt to abort.${RESET}\\n"
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at ANY prompt to abort.${RESET}\n"
 
     if [ ! -f "$DHCPD_CONF" ]; then
         log_error "${DHCPD_CONF} does not exist yet."
@@ -1092,7 +1093,7 @@ add_subnet_to_existing() {
     local add_more="y"
 
     while [[ "$add_more" =~ ^[Yy]$ ]]; do
-        echo -e "\\n  ${YELLOW}${BOLD}--- New Subnet #$count ---${RESET} ${DIM}(type 'c' to cancel)${RESET}"
+        echo -e "\n  ${YELLOW}${BOLD}--- New Subnet #$count ---${RESET} ${DIM}(type 'c' to cancel)${RESET}"
 
         local def_net="192.168.$((30 + count*10)).0"
         local def_mask="255.255.255.0"
