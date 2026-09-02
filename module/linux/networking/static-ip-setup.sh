@@ -89,6 +89,83 @@ BACKUP_DIR="/var/backups/static-ip-setup"
 INTERFACES_FILE="/etc/network/interfaces"
 NETPLAN_DIR="/etc/netplan"
 
+RESOLVCONF_TAIL="/etc/resolvconf/resolv.conf.d/tail"
+
+# Install resolvconf (if not already present) and register the DNS
+# server(s) the user entered so they survive interface restarts.
+install_configure_resolvconf() {
+    local dns_servers="$1"
+
+    if [ -z "$dns_servers" ]; then
+        log_warn "No DNS servers provided; skipping resolvconf setup."
+        return
+    fi
+
+    log_info "Checking for resolvconf..."
+    if command -v resolvconf >/dev/null 2>&1; then
+        log_info "resolvconf is already installed."
+    else
+        if [ "$DRY_RUN" = true ]; then
+            dry_run_print "Would install resolvconf (apt-get install -y resolvconf)"
+        else
+            if ! command -v apt-get >/dev/null 2>&1; then
+                log_error "apt-get not found. Please install resolvconf manually."
+                return 1
+            fi
+            log_info "Installing resolvconf..."
+            apt-get update -qq
+            if ! DEBIAN_FRONTEND=noninteractive apt-get install -y resolvconf; then
+                log_error "Failed to install resolvconf."
+                return 1
+            fi
+            log_success "resolvconf installed."
+        fi
+    fi
+
+    # Build "nameserver x.x.x.x" lines from the comma-separated input
+    local ns_lines=""
+    local ns_array=()
+    IFS=',' read -ra ns_array <<< "$dns_servers"
+    local ns
+    for ns in "${ns_array[@]}"; do
+        ns="$(echo "$ns" | xargs)"  # trim whitespace
+        [ -z "$ns" ] && continue
+        if ! is_valid_ipv4 "$ns"; then
+            log_warn "Skipping invalid DNS entry: $ns"
+            continue
+        fi
+        ns_lines+="nameserver $ns"$'\n'
+    done
+
+    if [ -z "$ns_lines" ]; then
+        log_warn "No valid DNS servers to configure; skipping resolvconf setup."
+        return
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        dry_run_print "Would write the following to $RESOLVCONF_TAIL:"
+        echo "$ns_lines" | sed 's/^/    /'
+        dry_run_print "Would execute: resolvconf -u"
+        return
+    fi
+
+    mkdir -p "$(dirname "$RESOLVCONF_TAIL")"
+    # Avoid duplicating entries on repeated runs
+    touch "$RESOLVCONF_TAIL"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        grep -qxF "$line" "$RESOLVCONF_TAIL" || echo "$line" >> "$RESOLVCONF_TAIL"
+    done <<< "$ns_lines"
+    log_success "Added nameserver(s) to $RESOLVCONF_TAIL"
+
+    if command -v resolvconf >/dev/null 2>&1; then
+        resolvconf -u
+        log_success "resolvconf updated (/etc/resolv.conf regenerated)."
+    else
+        log_warn "resolvconf command not found; entries saved but not applied."
+    fi
+}
+
 set_static_ip() {
     clear
     print_banner
@@ -117,6 +194,14 @@ set_static_ip() {
         if is_valid_ipv4 "$ip_part"; then break; fi
         log_error "Invalid IP address format. Use format: 192.168.1.100 or 192.168.1.100/24"
     done
+    # BUG FIX: default to /24 here so BOTH the netplan and ifupdown branches
+    # get a valid CIDR-qualified address (netplan requires a prefix length
+    # in its 'addresses' list; without this it silently wrote an invalid
+    # entry like "addresses: [192.168.1.100]").
+    if [[ "$ip_address" != */* ]]; then
+        ip_address="${ip_address}/24"
+        log_warn "No CIDR provided, defaulting to /24 ($ip_address)"
+    fi
 
     local gateway
     while true; do
@@ -126,10 +211,27 @@ set_static_ip() {
         log_error "Invalid gateway IP address."
     done
 
+    # BUG FIX: DNS input previously had no validation at all, unlike
+    # IP/gateway; garbage input flowed straight into the config files.
     local dns
-    read -p "  Enter DNS Servers (comma separated, e.g. 8.8.8.8,1.1.1.1): "
-    dns="$REPLY"
-    if is_cancel "$dns"; then return; fi
+    while true; do
+        read -p "  Enter DNS Servers (comma separated, e.g. 8.8.8.8,1.1.1.1): " dns
+        if is_cancel "$dns"; then return; fi
+        if [ -z "$dns" ]; then log_error "DNS servers cannot be empty."; continue; fi
+        local dns_ok=true
+        local dns_check=()
+        IFS=',' read -ra dns_check <<< "$dns"
+        local d
+        for d in "${dns_check[@]}"; do
+            d="$(echo "$d" | xargs)"
+            if ! is_valid_ipv4 "$d"; then
+                log_error "Invalid DNS server IP: '$d'"
+                dns_ok=false
+                break
+            fi
+        done
+        if [ "$dns_ok" = true ]; then break; fi
+    done
 
     echo -e "\n  ${YELLOW}${BOLD}--- Configuration Review ---${RESET}"
     echo -e "  Interface: $interface"
@@ -141,6 +243,11 @@ set_static_ip() {
     if is_cancel "$confirm" || [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         log_warn "Configuration cancelled. No changes were made."
         return
+    fi
+
+    read -p "  Install/configure resolvconf with these DNS server(s)? [Y/n/c]: " resolvconf_confirm
+    if [[ ! "$resolvconf_confirm" =~ ^[Nn]$ ]] && ! is_cancel "$resolvconf_confirm"; then
+        install_configure_resolvconf "$dns"
     fi
 
     # BUG FIX: declare local first, then assign, so the exit code of
@@ -239,10 +346,21 @@ EOF
             dry_run_print "Would remove existing blocks for $interface and append the following to $INTERFACES_FILE:"
             echo "$interfaces_content" | sed 's/^/    /'
         else
-            # BUG FIX: escape dots in interface name before using as sed regex
-            # (e.g. eth0.1 has a '.' that matches any char without escaping).
+            # BUG FIX: the old sed range delete ("/auto IFACE/,/dns-nameservers/d")
+            # had no bound if the existing stanza for this interface lacked a
+            # dns-nameservers line (e.g. a DHCP block, or one edited by hand) -
+            # sed would then delete everything to the end of the file. This
+            # awk version only removes the block starting at "auto IFACE" and
+            # stops at the first blank line or the next "auto " block, so it
+            # can never consume more than that one interface's stanza.
             local iface_escaped="${interface//./\\.}"
-            sed -i "/auto ${iface_escaped}/,/dns-nameservers/d" "$INTERFACES_FILE"
+            awk -v pat="^auto[[:space:]]+${iface_escaped}([[:space:]]|\$)" '
+                $0 ~ pat { skip=1; next }
+                skip && /^[[:space:]]*$/ { skip=0; next }
+                skip && /^auto[[:space:]]+/ { skip=0 }
+                skip { next }
+                { print }
+            ' "$INTERFACES_FILE" > "${INTERFACES_FILE}.tmp" && mv "${INTERFACES_FILE}.tmp" "$INTERFACES_FILE"
             echo "$interfaces_content" >> "$INTERFACES_FILE"
             log_success "Appended configuration to $INTERFACES_FILE"
         fi
@@ -390,6 +508,11 @@ main() {
             6)
                 if [ "$DRY_RUN" = true ]; then
                     DRY_RUN=false
+                    # BUG FIX: root was only ever checked once at startup. If the
+                    # script was launched as --dry-run by a non-root user and then
+                    # switched to live mode from here, every write later on would
+                    # fail silently/confusingly instead of a clear upfront error.
+                    check_root
                     log_success "Dry Run mode DISABLED. Changes will be APPLIED."
                 else
                     DRY_RUN=true
