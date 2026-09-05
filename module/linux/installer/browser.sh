@@ -3,7 +3,7 @@
 echo "========================================== Browser Installer =========================================="
 
 # Package Manager Detection Function
-
+#F Only supporting: apt, dnf, yum package manager
 echo " Detecting Package Manager "
 PKG_MANAGER=""
 
@@ -14,8 +14,6 @@ detect_package_manager() {
         PKG_MANAGER="dnf"
     elif command -v yum >/dev/null 2>&1; then
         PKG_MANAGER="yum"
-    elif command -v pacman >/dev/null 2>&1; then
-        PKG_MANAGER="pacman"
     else
         echo "Error: Package manager not found."
         exit 1
@@ -60,7 +58,6 @@ while true; do
       case $PKG_MANAGER in
         apt) sudo apt install firefox -y ;;
         dnf|yum) sudo $PKG_MANAGER install firefox -y ;;
-        pacman) sudo pacman -S firefox --noconfirm ;;
       esac
       echo "Firefox successfully installed!"
       ;;
@@ -75,8 +72,6 @@ while true; do
         sudo $PKG_MANAGER update
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
         sudo $PKG_MANAGER install google-chrome-stable -y
-      elif [ "$PKG_MANAGER" = "pacman" ]; then
-        sudo pacman -S google-chrome --noconfirm
       fi
       echo "Google Chrome successfully installed!"
       ;;
@@ -91,8 +86,6 @@ while true; do
         sudo $PKG_MANAGER update
         wget https://dl.google.com/linux/direct/google-chrome-stable_current_arm64.rpm
         sudo $PKG_MANAGER install google-chrome-stable -y
-      elif [ "$PKG_MANAGER" = "pacman" ]; then
-        sudo pacman -S google-chrome --noconfirm
       fi
       echo "Google Chrome ARM64 successfully installed!"
       ;;
