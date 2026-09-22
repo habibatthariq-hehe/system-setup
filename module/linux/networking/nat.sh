@@ -426,10 +426,18 @@ enable_forwarding() {
 # config is backed up once and restored by --rollback (conf_backup action).
 ensure_nft_include() {
     local conf="/etc/nftables.conf" tmp_conf
+    mkdir -p "$(dirname "$conf")" || return 1
+    mkdir -p "$(dirname "$NFT_PERSIST_FILE")" || return 1
     if [ ! -f "$conf" ]; then
-        log_warn "/etc/nftables.conf missing - cannot wire drop-in include automatically."
-        log_info  "Create it or add manually: include \"/etc/nftables.d/*.conf\""
-        return 1
+        log_info "$conf missing - creating standard nftables configuration..."
+        if ! printf '#!/usr/sbin/nft -f\n\nflush ruleset\ninclude "/etc/nftables.d/*.conf"\n' > "$conf"; then
+            log_error "Could not create $conf."
+            return 1
+        fi
+        chmod 644 "$conf" || return 1
+        grep -q "^conf_backup|$conf$" "$MANIFEST" || record conf_backup "$conf"
+        log_success "Created $conf with drop-in include."
+        return 0
     fi
     if grep -qE 'include.*nftables\.d' "$conf" 2>/dev/null; then return 0; fi
     mkdir -p "$BACKUP_DIR" || return 1
@@ -446,6 +454,7 @@ ensure_nft_include() {
         log_error "Updated /etc/nftables.conf failed nftables validation."
         return 1
     fi
+    chmod 644 "$tmp_conf" || true
     if ! mv -f "$tmp_conf" "$conf"; then
         rm -f "$tmp_conf"; return 1
     fi
@@ -455,8 +464,11 @@ ensure_nft_include() {
 }
 
 persist_nft() {
-    local tmp_file manifest_before
+    local tmp_file manifest_before nft_dir
     manifest_before=$(wc -l < "$MANIFEST" 2>/dev/null || echo 0)
+    nft_dir="$(dirname "$NFT_PERSIST_FILE")"
+    mkdir -p "$nft_dir" || {
+        log_error "Could not create directory '$nft_dir' for nftables persistence."; return 1; }
     tmp_file=$(mktemp "${NFT_PERSIST_FILE}.tmp.XXXXXX") || {
         log_error "Could not create temporary nftables persistence file."; return 1; }
     if ! nft list table ip nat_tool > "$tmp_file" 2>/dev/null; then
@@ -465,8 +477,7 @@ persist_nft() {
     if ! nft -c -f "$tmp_file" >/dev/null 2>&1; then
         rm -f "$tmp_file"; log_error "Generated nftables persistence file failed validation."; return 1
     fi
-    chmod 600 "$tmp_file" || { rm -f "$tmp_file"; return 1; }
-    mkdir -p "$(dirname "$NFT_PERSIST_FILE")" || { rm -f "$tmp_file"; return 1; }
+    chmod 644 "$tmp_file" || { rm -f "$tmp_file"; return 1; }
     if ! mv -f "$tmp_file" "$NFT_PERSIST_FILE"; then
         rm -f "$tmp_file"; log_error "Could not install nftables persistence file."; return 1
     fi
@@ -503,6 +514,7 @@ persist_ipt() {
     if ! iptables-save > "$tmp_rules"; then rm -f "$tmp_rules"; log_error "iptables-save failed."; return 1; fi
     chmod 600 "$tmp_rules" || { rm -f "$tmp_rules"; return 1; }
     restore_bin=$(command -v iptables-restore 2>/dev/null) || { rm -f "$tmp_rules"; log_error "iptables-restore not found."; return 1; }
+    mkdir -p "$(dirname "$IPT_UNIT_FILE")" || { rm -f "$tmp_rules"; return 1; }
     tmp_unit=$(mktemp "${IPT_UNIT_FILE}.tmp.XXXXXX") || { rm -f "$tmp_rules"; return 1; }
     cat > "$tmp_unit" <<EOF
 [Unit]
@@ -539,8 +551,14 @@ remove_persistence() {
     if [ -f "$NFT_PERSIST_FILE" ]; then
         rm -f "$NFT_PERSIST_FILE" && log_success "Removed $NFT_PERSIST_FILE" && removed=1
     fi
+    if [ -d "$(dirname "$NFT_PERSIST_FILE")" ] && ! grep -qE 'include.*nftables\.d' /etc/nftables.conf 2>/dev/null; then
+        rmdir "$(dirname "$NFT_PERSIST_FILE")" 2>/dev/null || true
+    fi
     if [ -f "$IPT_RESTORE_FILE" ]; then
         rm -f "$IPT_RESTORE_FILE" && log_success "Removed $IPT_RESTORE_FILE" && removed=1
+    fi
+    if [ -d "$IPT_PERSIST_DIR" ]; then
+        rmdir "$IPT_PERSIST_DIR" 2>/dev/null || true
     fi
     if [ -f "$IPT_UNIT_FILE" ]; then
         systemctl disable nat-tool-restore >/dev/null 2>&1
@@ -566,6 +584,12 @@ apply_nft() {
     if nft list table ip nat_tool > "$APPLY_NFT_BACKUP" 2>/dev/null; then old_exists=1; else : > "$APPLY_NFT_BACKUP"; fi
     candidate=$(mktemp "$BACKUP_DIR/nat-tool-nft-candidate.XXXXXX") || { cleanup_apply_temp; return 1; }
     {
+        # BUG FIX (TOCTOU): delete-then-add used to be two separate `nft -f`
+        # calls with a window in between where nat_tool did not exist at all
+        # (a crash there would drop NAT silently). Both are now folded into
+        # ONE file applied with a single `nft -f`, so nftables commits them
+        # as one atomic transaction - there is no in-between state.
+        if [ "$old_exists" -eq 1 ]; then echo 'delete table ip nat_tool'; fi
         echo 'add table ip nat_tool'
         echo 'add chain ip nat_tool postrouting { type nat hook postrouting priority srcnat ; }'
         for ifc in $lan $dmz; do printf 'add rule ip nat_tool postrouting oifname "%s" iifname "%s" masquerade\n' "$wan" "$ifc"; done
@@ -584,12 +608,6 @@ apply_nft() {
     } > "$candidate" || { rm -f "$candidate"; cleanup_apply_temp; return 1; }
     if ! nft -c -f "$candidate" >/dev/null 2>&1; then
         rm -f "$candidate"; log_error "Generated nftables rules failed validation; nothing was changed."; cleanup_apply_temp; return 1
-    fi
-    if nft list table ip nat_tool >/dev/null 2>&1; then
-        if ! nft_delete_nat_tool_if_present; then
-            log_error "Could not replace existing nat_tool table."
-            rm -f "$candidate"; cleanup_apply_temp; return 1
-        fi
     fi
     if ! nft -f "$candidate" >/dev/null 2>&1; then
         log_error "nftables apply failed; restoring previous nat_tool table."
@@ -676,6 +694,57 @@ restore_forwarding_after_failed_apply() {
     fi
 }
 
+# NEW: derives WAN and internal-zone interfaces from the rules actually
+# active on the system (not from WAN_IFACE/LAN_IFACE/DMZ_IFACES, which are
+# only set during an interactive wizard run and are empty when --status
+# runs standalone).
+#
+# NOTE: apply_nft/apply_ipt generate a symmetric drop pair for every LAN<->
+# DMZ combination (iifname L oifname D drop, iifname D oifname L drop), so
+# a LAN interface and a DMZ interface end up structurally indistinguishable
+# from the rules alone - both accept to WAN, both appear in drop rules.
+# Rather than guess and risk mislabeling a zone, this lists every internal
+# interface plus which pairs are mutually isolated, which is everything the
+# live rules actually encode.
+show_config() {
+    echo -e "  ${BOLD}Configured zones:${RESET}"
+    local wan="" internal_set="" drop_pairs=""
+
+    if [ "$BACKEND" = "nft" ]; then
+        if ! nft list table ip nat_tool >/dev/null 2>&1; then
+            echo -e "      ${DIM}no nat_tool table present - nothing configured${RESET}"
+            return 0
+        fi
+        local dump
+        dump=$(nft list table ip nat_tool 2>/dev/null)
+        wan=$(printf '%s\n' "$dump" | grep 'masquerade' | grep -oP 'oifname "\K[^"]+' | head -1)
+        internal_set=$(printf '%s\n' "$dump" | grep 'accept' | grep "oifname \"$wan\"" | grep -oP 'iifname "\K[^"]+' | sort -u)
+        drop_pairs=$(printf '%s\n' "$dump" | grep ' drop$' | sed -nE 's/.*iifname "([^"]+)" oifname "([^"]+)" drop/\1 -x- \2/p' | sort -u)
+    else
+        if ! iptables -t nat -L POSTROUTING -n 2>/dev/null | grep -q MASQUERADE; then
+            echo -e "      ${DIM}no MASQUERADE rules present - nothing configured${RESET}"
+            return 0
+        fi
+        wan=$(iptables -t nat -S POSTROUTING 2>/dev/null | grep MASQUERADE | grep -oP -- '-o \K\S+' | head -1)
+        internal_set=$(iptables -S FORWARD 2>/dev/null | grep -- "-j ACCEPT" | grep -- "-o $wan" | grep -oP -- '-i \K\S+' | sort -u)
+        drop_pairs=$(iptables -S FORWARD 2>/dev/null | grep -- "-j DROP" | sed -nE 's/.*-i ([^ ]+) -o ([^ ]+).*/\1 -x- \2/p' | sort -u)
+    fi
+
+    [ -n "$wan" ] && echo -e "      WAN      : ${GREEN}$wan${RESET} (masquerade)" \
+                  || echo -e "      WAN      : ${DIM}not detected${RESET}"
+    if [ -n "$internal_set" ]; then
+        echo -e "      Internal :$(printf ' %s' $internal_set) -> $wan forwarding"
+    else
+        echo -e "      Internal : ${DIM}none${RESET}"
+    fi
+    if [ -n "$drop_pairs" ]; then
+        echo -e "      Isolated pairs (traffic dropped both ways):"
+        # de-duplicate A-x-B / B-x-A into one line per unordered pair
+        printf '%s\n' "$drop_pairs" | awk '{ if ($1 < $3) print $1" <-x-> "$3; else print $3" <-x-> "$1 }' | sort -u \
+            | while IFS= read -r pair; do echo -e "          $pair"; done
+    fi
+}
+
 show_status() {
     clear; print_banner
     echo -e "${BLUE}${BOLD}  Current NAT Rules (as applied by this tool)${RESET}"
@@ -687,6 +756,8 @@ show_status() {
     else
         iptables -t nat -L POSTROUTING -nv 2>/dev/null | grep -E "MASQUERADE|target" || log_warn "No MASQUERADE rules found."
     fi
+    print_separator
+    show_config
     print_separator
     echo -e "  ${BOLD}ip_forward:${RESET} $(sysctl -n net.ipv4.ip_forward 2>/dev/null)"
     echo -e "  ${BOLD}Persistence:${RESET}"
