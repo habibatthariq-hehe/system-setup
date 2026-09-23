@@ -69,6 +69,14 @@ install_wireguard() {
 
     if command -v wg &> /dev/null; then
         log_success "WireGuard installed successfully!"
+        if [ "$PKG_MANAGER" = "dnf" ] || [ "$PKG_MANAGER" = "yum" ]; then
+            if ! modprobe wireguard 2>/dev/null && [ ! -e /sys/module/wireguard ]; then
+                log_warn "The wireguard kernel module could not be loaded."
+                log_warn "On older RHEL/CentOS kernels (< 5.6) this usually means the"
+                log_warn "kernel module is missing - install kmod-wireguard (ELRepo) or"
+                log_warn "upgrade the kernel, then try bringing the interface up again."
+            fi
+        fi
     else
         log_error "Failed to install WireGuard."
     fi
@@ -84,12 +92,30 @@ generate_keys() {
     mkdir -p "$key_dir"
     chmod 700 "$key_dir"
 
+    if [ -f "$key_dir/privatekey" ]; then
+        log_warn "An existing keypair was found in $key_dir."
+        log_warn "Overwriting it will break any peer still configured with the old public key."
+        read -rp "  Overwrite the existing keypair? [y/N]: " OVERWRITE_KEYS
+        if [[ ! "$OVERWRITE_KEYS" =~ ^[Yy]$ ]]; then
+            log_info "Keeping existing keypair. No changes made."
+            return
+        fi
+    fi
+
     log_info "Generating new keypair (Private & Public Key)..."
     local privkey
     local pubkey
 
     privkey=$(wg genkey)
+    if [ -z "$privkey" ]; then
+        log_error "wg genkey failed to produce a private key (is the wireguard kernel module loaded?)."
+        return 1
+    fi
     pubkey=$(echo "$privkey" | wg pubkey)
+    if [ -z "$pubkey" ]; then
+        log_error "wg pubkey failed to derive a public key from the generated private key."
+        return 1
+    fi
 
     echo "$privkey" > "$key_dir/privatekey"
     echo "$pubkey" > "$key_dir/publickey"
@@ -103,12 +129,47 @@ generate_keys() {
     print_separator
 }
 
+# Validates an IPv4 CIDR like 10.0.0.1/24 (octets 0-255, prefix 0-32).
+is_valid_cidr() {
+    local val="$1"
+    [[ "$val" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+    local o1="${BASH_REMATCH[1]}" o2="${BASH_REMATCH[2]}" o3="${BASH_REMATCH[3]}" o4="${BASH_REMATCH[4]}" prefix="${BASH_REMATCH[5]}"
+    for o in "$o1" "$o2" "$o3" "$o4"; do
+        [ "$o" -le 255 ] || return 1
+    done
+    [ "$prefix" -le 32 ] || return 1
+    return 0
+}
+
+# Validates a TCP/UDP port number (1-65535).
+is_valid_port() {
+    local val="$1"
+    [[ "$val" =~ ^[0-9]+$ ]] || return 1
+    [ "$val" -ge 1 ] && [ "$val" -le 65535 ]
+}
+
+# Validates a WireGuard key: base64, 44 chars, padded with a single '='.
+is_valid_wg_key() {
+    local val="$1"
+    [[ "$val" =~ ^[A-Za-z0-9+/]{43}=$ ]]
+}
+
+# Validates an interface name: safe to use as a bare filename component.
+is_valid_iface_name() {
+    local val="$1"
+    [[ "$val" =~ ^[A-Za-z0-9_-]{1,15}$ ]]
+}
+
 configure_wireguard() {
     log_info "WireGuard Interface Configuration"
     print_separator
 
     read -rp "  Interface Name [default: wg0]: " IFACE
     IFACE=${IFACE:-wg0}
+    if ! is_valid_iface_name "$IFACE"; then
+        log_error "Invalid interface name. Use letters, numbers, '-' or '_' only (max 15 chars)."
+        return 1
+    fi
 
     local CONF_FILE="/etc/wireguard/${IFACE}.conf"
     local EXISTING_IP=""
@@ -129,29 +190,42 @@ configure_wireguard() {
         fi
 
         read -rp "  Do you want to edit or overwrite this configuration? [Y/n]: " MODIFY_CONF
-        if [[ "$MODIFY_CONF" =~ ^[Nn]$ ]]; then
+        if [[ "$MODIFY_CONF" =~ ^([Nn]|[Nn][Oo]|[Tt]idak)$ ]]; then
             log_info "Configuration update cancelled."
             return
         fi
     fi
 
     # Prompt for IP Address & Subnet (with existing IP as default option if present)
-    if [ -n "$EXISTING_IP" ]; then
-        read -rp "  IP Address & Subnet [current: $EXISTING_IP]: " ADDRESS
-        ADDRESS=${ADDRESS:-$EXISTING_IP}
-    else
-        read -rp "  IP Address & Subnet (e.g., 10.0.0.1/24): " ADDRESS
-    fi
+    while true; do
+        if [ -n "$EXISTING_IP" ]; then
+            read -rp "  IP Address & Subnet [current: $EXISTING_IP]: " ADDRESS
+            ADDRESS=${ADDRESS:-$EXISTING_IP}
+        else
+            read -rp "  IP Address & Subnet (e.g., 10.0.0.1/24): " ADDRESS
+        fi
 
-    if is_cancel "$ADDRESS" || [ -z "$ADDRESS" ]; then
-        log_warn "Configuration setup cancelled."
-        return
-    fi
+        if is_cancel "$ADDRESS" || [ -z "$ADDRESS" ]; then
+            log_warn "Configuration setup cancelled."
+            return
+        fi
+
+        if is_valid_cidr "$ADDRESS"; then
+            break
+        fi
+        log_error "Invalid format. Expected an IPv4 address with a subnet prefix, e.g. 10.0.0.1/24."
+    done
 
     # Prompt for Port
     local DEFAULT_PORT="${EXISTING_PORT:-51820}"
-    read -rp "  Listen Port [default: $DEFAULT_PORT]: " PORT
-    PORT=${PORT:-$DEFAULT_PORT}
+    while true; do
+        read -rp "  Listen Port [default: $DEFAULT_PORT]: " PORT
+        PORT=${PORT:-$DEFAULT_PORT}
+        if is_valid_port "$PORT"; then
+            break
+        fi
+        log_error "Invalid port. Enter a number between 1 and 65535."
+    done
 
     # Check for Private Key
     local PRIV_KEY="$EXISTING_KEY"
@@ -159,15 +233,29 @@ configure_wireguard() {
         read -rp "  Use Private Key from /etc/wireguard/keys/privatekey? [Y/n]: " USE_EXISTING
         if [[ "$USE_EXISTING" =~ ^[Yy]$ ]] || [ -z "$USE_EXISTING" ]; then
             PRIV_KEY=$(cat /etc/wireguard/keys/privatekey)
+            if [ -z "$PRIV_KEY" ]; then
+                log_warn "/etc/wireguard/keys/privatekey exists but is empty; ignoring it."
+            fi
         fi
     fi
 
     if [ -z "$PRIV_KEY" ]; then
-        read -rp "  Enter Private Key manually (leave blank to generate automatically): " PRIV_KEY
-        if [ -z "$PRIV_KEY" ]; then
-            PRIV_KEY=$(wg genkey)
-            log_info "Private Key generated automatically."
-        fi
+        while true; do
+            read -rp "  Enter Private Key manually (leave blank to generate automatically): " PRIV_KEY
+            if [ -z "$PRIV_KEY" ]; then
+                PRIV_KEY=$(wg genkey)
+                if [ -z "$PRIV_KEY" ]; then
+                    log_error "wg genkey failed to produce a private key (is the wireguard kernel module loaded?)."
+                    return 1
+                fi
+                log_info "Private Key generated automatically."
+                break
+            fi
+            if is_valid_wg_key "$PRIV_KEY"; then
+                break
+            fi
+            log_error "That doesn't look like a valid WireGuard key (expected 44-char base64, e.g. ending in '=')."
+        done
     fi
 
     # Write [Interface] section
@@ -217,6 +305,15 @@ toggle_interface() {
     print_separator
     read -rp "  Enter Interface Name [default: wg0]: " IFACE
     IFACE=${IFACE:-wg0}
+    if ! is_valid_iface_name "$IFACE"; then
+        log_error "Invalid interface name. Use letters, numbers, '-' or '_' only (max 15 chars)."
+        return
+    fi
+
+    if [ ! -f "/etc/wireguard/${IFACE}.conf" ]; then
+        log_error "No config found at /etc/wireguard/${IFACE}.conf - create it first (option 3)."
+        return
+    fi
 
     echo "  1) Enable / Up"
     echo "  2) Disable / Down"
@@ -251,7 +348,7 @@ main_menu() {
         echo -e "  ${BOLD}0.${RESET} Exit"
         print_separator
 
-        read -rp "  Select Option [1-6]: " OPT
+        read -rp "  Select Option [0-5]: " OPT
 
         case $OPT in
             1)
