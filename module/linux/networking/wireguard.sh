@@ -131,6 +131,21 @@ generate_keys() {
     echo -e "  ${BOLD}Private Key :${RESET} $privkey"
     echo -e "  ${BOLD}Public Key  :${RESET} $pubkey"
     print_separator
+    echo -e "  ${YELLOW}${BOLD}WHAT TO DO WITH EACH KEY - read this before continuing:${RESET}"
+    echo -e "  ${BOLD}Private Key${RESET} -> stays on THIS machine only. Never share it, never"
+    echo -e "                  paste it into the other machine's config. Option 3"
+    echo -e "                  (Create/Edit Interface Configuration) will use this"
+    echo -e "                  automatically when you choose 'use existing key'."
+    echo -e "  ${BOLD}Public Key${RESET}  -> hand this to the OTHER machine. If you're setting up"
+    echo -e "                  the server, send this to whoever configures the client"
+    echo -e "                  (and vice versa) - option 4 (Add Peer) on the OTHER"
+    echo -e "                  machine will ask for it as 'Peer's Public Key'."
+    echo ""
+    echo -e "  ${DIM}Each machine (server and every client) must run this option ONCE for"
+    echo -e "  itself, with its own separate keypair. Never copy a privatekey file or"
+    echo -e "  reuse the same keypair across two machines - if both sides show the same"
+    echo -e "  public key in 'wg show', that's the bug, not a coincidence.${RESET}"
+    print_separator
 }
 
 # Validates an IPv4 CIDR like 10.0.0.1/24 (octets 0-255, prefix 0-32).
@@ -175,7 +190,11 @@ configure_wireguard() {
     log_info "WireGuard Interface Configuration"
     print_separator
 
-    read -rp "  Interface Name [default: wg0]: " IFACE
+    read -rp "  Interface Name [default: wg0, or 'c' to cancel]: " IFACE
+    if is_cancel "$IFACE"; then
+        log_warn "Cancelled. No changes made."
+        return 1
+    fi
     IFACE=${IFACE:-wg0}
     if ! is_valid_iface_name "$IFACE"; then
         log_error "Invalid interface name. Use letters, numbers, '-' or '_' only (max 15 chars)."
@@ -236,13 +255,17 @@ configure_wireguard() {
         # values, and nothing here re-applied the new ones. The user had no
         # indication their change wasn't live yet.
         if is_interface_active "$IFACE"; then
-            log_warn "Interface '$IFACE' is currently UP. The running tunnel will keep using"
-            log_warn "the OLD settings until you bring it down and up again (menu option 6),"
-            log_warn "or run: wg syncconf $IFACE <(wg-quick strip $IFACE)"
+            log_warn "Interface '$IFACE' is currently UP. Address/ListenPort changes need a full"
+            log_warn "restart to take effect - 'wg syncconf' does NOT apply these, only [Peer]"
+            log_warn "changes. Bring it down and up again after saving (menu option 6)."
         fi
     fi
 
     # Prompt for IP Address & Subnet (with existing IP as default option if present)
+    echo -e "  ${DIM}This is the tunnel IP for THIS machine only - the address wg0 will have on"
+    echo -e "  this interface. Every machine in the same VPN (server and every client)"
+    echo -e "  needs a DIFFERENT IP in the SAME subnet, e.g. server 10.10.10.1/24,"
+    echo -e "  client A 10.10.10.2/24, client B 10.10.10.3/24.${RESET}"
     while true; do
         if [ -n "$EXISTING_IP" ]; then
             read -rp "  IP Address & Subnet [current: $EXISTING_IP]: " ADDRESS
@@ -263,9 +286,19 @@ configure_wireguard() {
     done
 
     # Prompt for Port
+    echo -e "  ${DIM}The UDP port THIS machine listens on for WireGuard traffic. On a server,"
+    echo -e "  this must be reachable from outside (open in the firewall, forwarded on the"
+    echo -e "  router if behind NAT) since clients connect to it via the Endpoint you'll"
+    echo -e "  set up on their side. On a client, it rarely matters - it doesn't need to"
+    echo -e "  match the server's port, and the default is fine unless you have a reason"
+    echo -e "  to change it.${RESET}"
     local DEFAULT_PORT="${EXISTING_PORT:-51820}"
     while true; do
-        read -rp "  Listen Port [default: $DEFAULT_PORT]: " PORT
+        read -rp "  Listen Port [default: $DEFAULT_PORT, or 'c' to cancel]: " PORT
+        if is_cancel "$PORT"; then
+            log_warn "Cancelled. No changes made."
+            return 1
+        fi
         PORT=${PORT:-$DEFAULT_PORT}
         if is_valid_port "$PORT"; then
             break
@@ -274,6 +307,9 @@ configure_wireguard() {
     done
 
     # Check for Private Key
+    echo -e "  ${DIM}This must be THIS machine's OWN private key - never the other machine's."
+    echo -e "  If server and client ever show the same private/public key pair in"
+    echo -e "  'wg show', that means a key got copied between machines by mistake.${RESET}"
     local PRIV_KEY="$EXISTING_KEY"
     if [ -z "$PRIV_KEY" ] && [ -f "/etc/wireguard/keys/privatekey" ]; then
         read -rp "  Use Private Key from /etc/wireguard/keys/privatekey? [Y/n]: " USE_EXISTING
@@ -287,7 +323,11 @@ configure_wireguard() {
 
     if [ -z "$PRIV_KEY" ]; then
         while true; do
-            read -rp "  Enter Private Key manually (leave blank to generate automatically): " PRIV_KEY
+            read -rp "  Enter Private Key manually (blank = auto-generate, 'c' = cancel): " PRIV_KEY
+            if is_cancel "$PRIV_KEY"; then
+                log_warn "Cancelled. No changes made."
+                return 1
+            fi
             if [ -z "$PRIV_KEY" ]; then
                 PRIV_KEY=$(wg genkey)
                 if [ -z "$PRIV_KEY" ]; then
@@ -324,6 +364,16 @@ EOF
     chmod 600 "$CONF_FILE"
     log_success "Configuration file saved successfully at: $CONF_FILE"
     log_info "Configured IP Address: $ADDRESS"
+
+    local THIS_PUBKEY
+    THIS_PUBKEY=$(echo "$PRIV_KEY" | wg pubkey 2>/dev/null)
+    if [ -n "$THIS_PUBKEY" ]; then
+        print_separator
+        echo -e "  ${BOLD}Next step:${RESET} send this machine's Public Key to whoever is setting up"
+        echo -e "  the OTHER side of the tunnel - they'll need it for option 4 (Add Peer):"
+        echo -e "  ${BOLD}Public Key:${RESET} $THIS_PUBKEY"
+        print_separator
+    fi
 }
 
 # Validates an AllowedIPs value: one or more comma-separated IPv4 CIDRs,
@@ -356,6 +406,58 @@ is_valid_endpoint() {
     [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]]
 }
 
+# Converts a dotted IPv4 address to its 32-bit integer form.
+ip_to_int() {
+    local a b c d
+    IFS='.' read -r a b c d <<< "$1"
+    echo $(( (a << 24) + (b << 16) + (c << 8) + d ))
+}
+
+# Converts a 32-bit integer back to dotted IPv4 form.
+int_to_ip() {
+    local ip="$1"
+    echo "$(( (ip >> 24) & 255 )).$(( (ip >> 16) & 255 )).$(( (ip >> 8) & 255 )).$(( ip & 255 ))"
+}
+
+# Suggests the first unused host IP within $1 (a CIDR, e.g. "10.10.10.1/24")
+# given a list of already-used bare IPv4 addresses (no prefix) as the
+# remaining args. Skips the network and broadcast addresses. Prints the
+# suggestion (bare IP, no prefix) on success; returns 1 with no output if
+# the subnet is full, has no usable host range (/31, /32), or is malformed.
+suggest_next_ip() {
+    local cidr="$1"; shift
+    local used=("$@")
+    local base_ip="${cidr%%/*}" prefix="${cidr##*/}"
+
+    is_valid_cidr "$cidr" || return 1
+    [ "$prefix" -le 30 ] || return 1   # /31 and /32 have no usable host range
+
+    local base_int host_bits net_size network broadcast
+    base_int=$(ip_to_int "$base_ip")
+    host_bits=$((32 - prefix))
+    net_size=$((1 << host_bits))
+    network=$(( base_int & (~(net_size - 1)) ))
+    broadcast=$(( network + net_size - 1 ))
+
+    local -A used_set=()
+    local u u_int
+    for u in "${used[@]}"; do
+        [ -n "$u" ] || continue
+        is_valid_cidr "${u}/32" || continue   # skip anything not a plain IPv4
+        u_int=$(ip_to_int "$u")
+        used_set["$u_int"]=1
+    done
+
+    local candidate
+    for (( candidate=network+1; candidate<broadcast; candidate++ )); do
+        if [ -z "${used_set[$candidate]+x}" ]; then
+            int_to_ip "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Adds a [Peer] block to an existing interface config. Works for both
 # directions: a server adding a client peer, or a client adding the server
 # as its peer - the only difference is which fields are prompted for.
@@ -363,7 +465,11 @@ add_peer() {
     log_info "Add WireGuard Peer"
     print_separator
 
-    read -rp "  Interface Name to add the peer to [default: wg0]: " IFACE
+    read -rp "  Interface Name to add the peer to [default: wg0, or 'c' to cancel]: " IFACE
+    if is_cancel "$IFACE"; then
+        log_warn "Cancelled."
+        return 1
+    fi
     IFACE=${IFACE:-wg0}
     if ! is_valid_iface_name "$IFACE"; then
         log_error "Invalid interface name. Use letters, numbers, '-' or '_' only (max 15 chars)."
@@ -377,9 +483,11 @@ add_peer() {
     fi
 
     echo ""
-    echo "  Which role is this machine playing for this peer?"
-    echo "    1) Server side - adding a CLIENT as a peer"
-    echo "    2) Client side - adding the SERVER as this machine's peer"
+    echo -e "  ${BOLD}What are you connecting THIS machine to?${RESET}"
+    echo "    1) THIS machine is the SERVER, and you're registering a CLIENT that"
+    echo "       will connect to it"
+    echo "    2) THIS machine is the CLIENT, and you're registering the SERVER"
+    echo "       it should connect to"
     read -rp "  Select [1-2, or 'c' to cancel]: " ROLE
     is_cancel "$ROLE" && { log_warn "Cancelled."; return 1; }
     case "$ROLE" in
@@ -390,6 +498,13 @@ add_peer() {
 
     # --- Public key of the peer (always required) ---
     local PEER_PUBKEY
+    if [ "$ROLE" = "1" ]; then
+        echo -e "  ${DIM}Enter the CLIENT's Public Key - the one THAT machine showed you after"
+        echo -e "  running option 2 (Generate Keys) on itself. NOT this server's own key.${RESET}"
+    else
+        echo -e "  ${DIM}Enter the SERVER's Public Key - the one the server showed after running"
+        echo -e "  option 2 (Generate Keys) on itself. NOT this client's own key.${RESET}"
+    fi
     while true; do
         read -rp "  Peer's Public Key: " PEER_PUBKEY
         is_cancel "$PEER_PUBKEY" && { log_warn "Cancelled."; return 1; }
@@ -398,6 +513,21 @@ add_peer() {
         fi
         log_error "That doesn't look like a valid WireGuard key (expected 44-char base64, e.g. ending in '=')."
     done
+
+    # Catch the exact mistake from the earlier session: pasting THIS
+    # machine's own public key as the peer's key (usually from copying the
+    # same generated keypair, or the same config file, to both machines).
+    local OWN_PRIVKEY OWN_PUBKEY
+    OWN_PRIVKEY=$(grep -i "^\s*PrivateKey" "$CONF_FILE" | head -1 | cut -d'=' -f2- | xargs)
+    if [ -n "$OWN_PRIVKEY" ]; then
+        OWN_PUBKEY=$(echo "$OWN_PRIVKEY" | wg pubkey 2>/dev/null)
+        if [ -n "$OWN_PUBKEY" ] && [ "$OWN_PUBKEY" = "$PEER_PUBKEY" ]; then
+            log_error "This is THIS machine's OWN public key, not the other machine's."
+            log_error "Server and client each need their own separate keypair (option 2,"
+            log_error "run on each machine individually) - re-check which key you copied."
+            return 1
+        fi
+    fi
 
     # Guard against adding the same peer twice - PublicKey is the identity
     # WireGuard itself keys off, so a duplicate silently confuses `wg show`.
@@ -412,8 +542,43 @@ add_peer() {
 
     # --- AllowedIPs (always required, meaning differs by role) ---
     local ALLOWED_IPS DEFAULT_ALLOWED=""
+    echo -e "  ${BOLD}What is 'AllowedIPs'?${RESET}"
+    echo -e "  ${DIM}Despite the name, this isn't just a permission list - it does TWO things"
+    echo -e "  at once: (1) which source IPs THIS machine will accept from this peer, and"
+    echo -e "  (2) which destination IPs get ROUTED into the tunnel to reach this peer."
+    echo -e "  Set it too narrow and legitimate traffic gets silently dropped; set it too"
+    echo -e "  wide (e.g. 0.0.0.0/0 on both sides) and you can create a routing loop.${RESET}"
     if [ "$ROLE" = "1" ]; then
         echo "  (Server side: this is usually the client's tunnel IP, e.g. 10.10.10.2/32)"
+
+        # Suggest the next free host IP in the server's own subnet, so the
+        # operator can just press Enter instead of tracking used IPs by hand.
+        local SERVER_ADDR SERVER_CIDR USED_IPS=() SUGGESTED_IP
+        SERVER_ADDR=$(grep -i "^\s*Address" "$CONF_FILE" | head -1 | cut -d'=' -f2- | xargs)
+        if [ -n "$SERVER_ADDR" ] && is_valid_cidr "$SERVER_ADDR"; then
+            # BUG FIX: the used-IP list only came from existing peers'
+            # AllowedIPs - it never included the server's own host IP (the
+            # Address= line), so suggest_next_ip happily offered the SAME
+            # IP the server itself already uses as "free" for the first
+            # client. Seed the used set with the server's own address first.
+            USED_IPS+=("${SERVER_ADDR%%/*}")
+
+            # Collect the bare IPv4 of every existing "AllowedIPs = x.x.x.x/32"
+            # peer line (only /32 entries represent a single occupied host).
+            while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                USED_IPS+=("${line%%/*}")
+            done < <(grep -i "^\s*AllowedIPs" "$CONF_FILE" | cut -d'=' -f2- | tr ',' '\n' | xargs -n1 2>/dev/null | grep -E '/32$')
+
+            if SUGGESTED_IP=$(suggest_next_ip "$SERVER_ADDR" "${USED_IPS[@]}"); then
+                DEFAULT_ALLOWED="${SUGGESTED_IP}/32"
+                log_info "Suggested next free IP in ${SERVER_ADDR}'s subnet: $DEFAULT_ALLOWED"
+            else
+                log_warn "Could not find a free host IP in ${SERVER_ADDR}'s subnet automatically (subnet full, or none used yet outside /32 entries) - enter one manually."
+            fi
+        else
+            log_warn "Could not read a valid Address from $CONF_FILE - enter the client's tunnel IP manually."
+        fi
     else
         echo "  (Client side: use 0.0.0.0/0 for full-tunnel, or specific subnets for split-tunnel,"
         echo "   e.g. 10.10.10.0/24, 192.168.100.0/24)"
@@ -436,6 +601,19 @@ add_peer() {
     # --- Endpoint (only meaningful when THIS machine is the client) ---
     local ENDPOINT="" KEEPALIVE=""
     if [ "$ROLE" = "2" ]; then
+        echo -e "  ${BOLD}What is 'Endpoint'?${RESET}"
+        echo -e "  ${DIM}The server's REAL network address - how THIS client reaches it BEFORE"
+        echo -e "  the tunnel exists. Think of it like a street address: it's how you find"
+        echo -e "  the building before you can use a room number inside it. The tunnel IP"
+        echo -e "  (10.x.x.x) is that room number - it only works AFTER the handshake"
+        echo -e "  succeeds, so it can never be used here.${RESET}"
+        echo ""
+        echo -e "  ${DIM}Which address to use depends on where the server actually is:${RESET}"
+        echo -e "  ${DIM}  - Same LAN as this client  -> server's LAN IP,   e.g. 192.168.1.50:51820${RESET}"
+        echo -e "  ${DIM}  - Reached over the internet -> server's public IP, e.g. 203.0.113.5:51820${RESET}"
+        echo -e "  ${DIM}  - Server's public IP changes -> a DDNS hostname, e.g. myhome.ddns.net:51820${RESET}"
+        echo -e "  ${DIM}(Only the client side sets this - the server just listens and never"
+        echo -e "  needs the client's address, since the client connects to it first.)${RESET}"
         while true; do
             read -rp "  Server Endpoint (host_or_ip:port, e.g. 203.0.113.5:51820): " ENDPOINT
             is_cancel "$ENDPOINT" && { log_warn "Cancelled."; return 1; }
@@ -444,18 +622,48 @@ add_peer() {
             fi
             log_error "Invalid format. Expected host_or_ip:port with a valid port (1-65535)."
         done
-        read -rp "  PersistentKeepalive in seconds [default: 25, blank to omit]: " KEEPALIVE
+        echo -e "  ${DIM}What is 'PersistentKeepalive'? WireGuard normally stays silent when idle -"
+        echo -e "  fine for a server with a stable public address, but most home routers/"
+        echo -e "  mobile networks (NAT) forget an idle connection after a short time and"
+        echo -e "  the server can no longer reach the client until it messages first. This"
+        echo -e "  sends a tiny heartbeat every N seconds to keep that NAT mapping open.${RESET}"
+        read -rp "  PersistentKeepalive in seconds [default: 25, blank to omit, 'c' to cancel]: " KEEPALIVE
+        if is_cancel "$KEEPALIVE"; then
+            log_warn "Cancelled - nothing written."
+            return 1
+        fi
         if [ -n "$KEEPALIVE" ] && ! [[ "$KEEPALIVE" =~ ^[0-9]+$ ]]; then
             log_warn "'$KEEPALIVE' is not a number - omitting PersistentKeepalive."
             KEEPALIVE=""
         fi
         [ -z "$KEEPALIVE" ] && KEEPALIVE="25"
     else
-        read -rp "  PersistentKeepalive in seconds [blank to omit, common if this client is behind NAT]: " KEEPALIVE
+        echo -e "  ${DIM}Usually left blank here - PersistentKeepalive only needs to be set on"
+        echo -e "  ONE side of a pair to keep both directions alive, and it's normally set on"
+        echo -e "  the client's peer entry (the one you'd add with role 2), not the server's.${RESET}"
+        read -rp "  PersistentKeepalive in seconds [blank to omit, 'c' to cancel]: " KEEPALIVE
+        if is_cancel "$KEEPALIVE"; then
+            log_warn "Cancelled - nothing written."
+            return 1
+        fi
         if [ -n "$KEEPALIVE" ] && ! [[ "$KEEPALIVE" =~ ^[0-9]+$ ]]; then
             log_warn "'$KEEPALIVE' is not a number - omitting PersistentKeepalive."
             KEEPALIVE=""
         fi
+    fi
+
+    # --- Show a summary and let the operator back out before writing ---
+    print_separator
+    echo -e "  ${BOLD}About to add this [Peer] block to $CONF_FILE:${RESET}"
+    echo "    PublicKey = $PEER_PUBKEY"
+    echo "    AllowedIPs = $ALLOWED_IPS"
+    [ -n "$ENDPOINT" ] && echo "    Endpoint = $ENDPOINT"
+    [ -n "$KEEPALIVE" ] && echo "    PersistentKeepalive = $KEEPALIVE"
+    print_separator
+    read -rp "  Write this to $CONF_FILE? [Y/n]: " CONFIRM_WRITE
+    if [[ "$CONFIRM_WRITE" =~ ^[Nn]$ ]]; then
+        log_info "Cancelled - nothing written."
+        return 0
     fi
 
     # --- Build and append the [Peer] block ---
@@ -560,6 +768,10 @@ main_menu() {
         echo -e "  ${BOLD}5.${RESET} Check Status & Configuration"
         echo -e "  ${BOLD}6.${RESET} Bring Up / Down WireGuard Interface"
         echo -e "  ${BOLD}0.${RESET} Exit"
+        print_separator
+        echo -e "  ${DIM}First time setting up a tunnel? Run these on EACH machine (server AND"
+        echo -e "  every client), in order: 1 -> 2 -> 3 -> 4 -> 6. Each machine generates its"
+        echo -e "  own keypair in step 2 - never copy a private key between machines.${RESET}"
         print_separator
 
         read -rp "  Select Option [0-6]: " OPT
