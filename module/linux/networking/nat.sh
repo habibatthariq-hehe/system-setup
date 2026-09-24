@@ -52,6 +52,7 @@ NFT_PERSIST_FILE="/etc/nftables.d/nat-tool.conf"
 IPT_PERSIST_DIR="/etc/nat-tool"
 IPT_RESTORE_FILE="$IPT_PERSIST_DIR/rules.v4"
 IPT_UNIT_FILE="/etc/systemd/system/nat-tool-restore.service"
+SYSCTL_PERSIST_FILE="/etc/sysctl.d/99-nat-tool.conf"
 
 APPLY_NFT_BACKUP=""
 APPLY_IPT_BACKUP=""
@@ -109,6 +110,48 @@ check_root() {
 manifest_init()  { mkdir -p "$(dirname "$MANIFEST")"; [ -f "$MANIFEST" ] || : > "$MANIFEST"; }
 record()         { printf '%s\n' "$1|$2" >> "$MANIFEST"; }
 
+# Preserve a file's original contents before this tool changes it. A missing
+# backup means the file did not exist before nat-tool and should be removed on
+# rollback. The manifest entry is recorded only once across repeated runs.
+backup_file_once() {
+    local file="$1" backup
+    backup="$BACKUP_DIR/$(basename "$file").bak"
+
+    mkdir -p "$BACKUP_DIR" || return 1
+    if grep -Fq "file_backup|$file" "$MANIFEST" 2>/dev/null \
+        || grep -Fq "conf_backup|$file" "$MANIFEST" 2>/dev/null; then
+        return 0
+    fi
+    if [ -e "$file" ]; then
+        cp -p "$file" "$backup" || return 1
+    fi
+    record file_backup "$file"
+}
+
+restore_backed_up_files() {
+    local entry action file backup
+    grep -E '^(file_backup|conf_backup)\|' "$MANIFEST" 2>/dev/null | while IFS= read -r entry; do
+        action="${entry%%|*}"
+        file="${entry#*|}"
+        backup="$BACKUP_DIR/$(basename "$file").bak"
+        if [ -f "$backup" ]; then
+            cp -p "$backup" "$file" && log_success "Restored $file from backup"
+        else
+            rm -f "$file" && log_success "Removed generated $file"
+        fi
+    done
+}
+
+restore_file_backup() {
+    local file="$1" backup
+    backup="$BACKUP_DIR/$(basename "$file").bak"
+    if [ -f "$backup" ]; then
+        cp -p "$backup" "$file"
+    else
+        rm -f "$file"
+    fi
+}
+
 do_rollback() {
     print_banner
     if [ ! -s "$MANIFEST" ]; then
@@ -138,24 +181,12 @@ do_rollback() {
                     log_success "Disabled ip_forward (was off)"
                 fi ;;
             sysctl_persist)
-                # BUG FIX: previous pattern removed only the comment line and
-                # left "net.ipv4.ip_forward = 1" behind. Delete both.
-                sed -i -e '/nat-tool: enable IPv4 forwarding/d' \
-                       -e '/^net\.ipv4\.ip_forward[[:space:]]*=[[:space:]]*1/d' /etc/sysctl.conf 2>/dev/null
-                if sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1; then
-                    log_success "Removed forwarding entry from /etc/sysctl.conf"
-                else
-                    log_error "Could not disable ip_forward while rolling back."
-                fi ;;
-            conf_backup)
-                # value = original file path; restore our one-time backup,
-                # or remove the file outright if it never existed before us.
-                if [ -f "$BACKUP_DIR/$(basename "$value").bak" ]; then
-                    cp "$BACKUP_DIR/$(basename "$value").bak" "$value" \
-                        && log_success "Restored $(basename "$value") from backup"
-                else
-                    rm -f "$value" && log_success "Removed generated $(basename "$value")"
-                fi ;;
+                # Kept only for compatibility with manifests from older versions.
+                # Do not remove broad ip_forward entries owned by other tools.
+                log_warn "Legacy sysctl persistence entry left unchanged: $value" ;;
+            file_backup|conf_backup)
+                # Restored after managed persistence files are removed below.
+                ;;
             nft_persist_file|ipt_restore_file|ipt_unit_file|ipt_netfilter_persist)
                 # Handled collectively by remove_persistence below
                 ;;
@@ -163,6 +194,8 @@ do_rollback() {
     done
 
     remove_persistence
+    restore_backed_up_files
+    command -v systemctl >/dev/null 2>&1 && systemctl daemon-reload >/dev/null 2>&1 || true
 
     : > "$MANIFEST"
     print_separator
@@ -407,13 +440,27 @@ enable_forwarding() {
         log_error "Failed to enable ip_forward."
         return 1
     fi
-    # Persist forwarding across reboots
-    if ! grep -q 'nat-tool:' /etc/sysctl.conf 2>/dev/null; then
-        echo "# nat-tool: enable IPv4 forwarding" >> /etc/sysctl.conf
-        echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
-        record sysctl_persist "added"
-    fi
     return 0
+}
+
+persist_forwarding() {
+    local tmp_file
+    backup_file_once "$SYSCTL_PERSIST_FILE" || {
+        log_error "Could not back up $SYSCTL_PERSIST_FILE."
+        return 1
+    }
+    mkdir -p "$(dirname "$SYSCTL_PERSIST_FILE")" || return 1
+    tmp_file=$(mktemp "${SYSCTL_PERSIST_FILE}.tmp.XXXXXX") || return 1
+    if ! printf '# Managed by nat-tool\nnet.ipv4.ip_forward = 1\n' > "$tmp_file"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    chmod 644 "$tmp_file" || { rm -f "$tmp_file"; return 1; }
+    if ! mv -f "$tmp_file" "$SYSCTL_PERSIST_FILE"; then
+        rm -f "$tmp_file"
+        return 1
+    fi
+    log_success "Saved IP forwarding persistence in $SYSCTL_PERSIST_FILE."
 }
 
 # ----------------------------- Persistence ------------------------------------
@@ -423,27 +470,24 @@ enable_forwarding() {
 # NEW: wires 'include "/etc/nftables.d/*.conf"' into /etc/nftables.conf so the
 # dumped table is actually loaded at boot. Previously this was only a warning,
 # meaning persistence silently did nothing on default installs. The original
-# config is backed up once and restored by --rollback (conf_backup action).
+# config is backed up once and restored by --rollback (file_backup action).
 ensure_nft_include() {
     local conf="/etc/nftables.conf" tmp_conf
     mkdir -p "$(dirname "$conf")" || return 1
     mkdir -p "$(dirname "$NFT_PERSIST_FILE")" || return 1
     if [ ! -f "$conf" ]; then
         log_info "$conf missing - creating standard nftables configuration..."
+        backup_file_once "$conf" || return 1
         if ! printf '#!/usr/sbin/nft -f\n\nflush ruleset\ninclude "/etc/nftables.d/*.conf"\n' > "$conf"; then
             log_error "Could not create $conf."
             return 1
         fi
         chmod 644 "$conf" || return 1
-        grep -q "^conf_backup|$conf$" "$MANIFEST" || record conf_backup "$conf"
         log_success "Created $conf with drop-in include."
         return 0
     fi
     if grep -qE 'include.*nftables\.d' "$conf" 2>/dev/null; then return 0; fi
-    mkdir -p "$BACKUP_DIR" || return 1
-    if [ ! -f "$BACKUP_DIR/$(basename "$conf").bak" ]; then
-        cp "$conf" "$BACKUP_DIR/$(basename "$conf").bak" || return 1
-    fi
+    backup_file_once "$conf" || return 1
     tmp_conf=$(mktemp "${conf}.tmp.XXXXXX") || return 1
     if ! cat "$conf" > "$tmp_conf" || ! printf '\n# nat-tool: load saved NAT rules\ninclude "/etc/nftables.d/*.conf"\n' >> "$tmp_conf"; then
         rm -f "$tmp_conf"; return 1
@@ -458,7 +502,6 @@ ensure_nft_include() {
     if ! mv -f "$tmp_conf" "$conf"; then
         rm -f "$tmp_conf"; return 1
     fi
-    grep -q "^conf_backup|$conf$" "$MANIFEST" || record conf_backup "$conf"
     log_success "Wired include line into /etc/nftables.conf."
     return 0
 }
@@ -478,12 +521,13 @@ persist_nft() {
         rm -f "$tmp_file"; log_error "Generated nftables persistence file failed validation."; return 1
     fi
     chmod 644 "$tmp_file" || { rm -f "$tmp_file"; return 1; }
+    backup_file_once "$NFT_PERSIST_FILE" || { rm -f "$tmp_file"; return 1; }
     if ! mv -f "$tmp_file" "$NFT_PERSIST_FILE"; then
         rm -f "$tmp_file"; log_error "Could not install nftables persistence file."; return 1
     fi
     record nft_persist_file "$NFT_PERSIST_FILE"
     if ! ensure_nft_include; then
-        rm -f "$NFT_PERSIST_FILE"
+        restore_file_backup "$NFT_PERSIST_FILE"
         head -n "$manifest_before" "$MANIFEST" > "${MANIFEST}.tmp" && mv -f "${MANIFEST}.tmp" "$MANIFEST"
         log_error "Could not wire nftables drop-in include."; return 1
     fi
@@ -500,20 +544,48 @@ persist_nft() {
 }
 
 persist_ipt() {
+    local wan="$1" lan="$2" dmz="$3"
+    local tmp_rules tmp_unit restore_bin ifc subnet l d
+
     mkdir -p "$IPT_PERSIST_DIR" || return 1
-    if command -v netfilter-persistent >/dev/null 2>&1; then
-        if netfilter-persistent save >/dev/null 2>&1; then
-            record ipt_netfilter_persist "saved"
-            log_success "Rules saved via netfilter-persistent."
-            return 0
-        fi
-        log_warn "netfilter-persistent save failed - falling back to own restore unit."
-    fi
-    local tmp_rules tmp_unit restore_bin
     tmp_rules=$(mktemp "${IPT_RESTORE_FILE}.tmp.XXXXXX") || return 1
-    if ! iptables-save > "$tmp_rules"; then rm -f "$tmp_rules"; log_error "iptables-save failed."; return 1; fi
+    {
+        # --noflush lets iptables-restore add only nat-tool's rules at boot,
+        # without replacing firewall rules owned by other services.
+        echo '*nat'
+        for ifc in $lan $dmz; do
+            subnet=$(subnet_of "$ifc")
+            [ -n "$subnet" ] || { log_error "Interface $ifc has no IPv4 address."; return 1; }
+            printf '%s\n' "-A POSTROUTING -o $wan -s $subnet -j MASQUERADE"
+        done
+        if [ -z "$lan$dmz" ]; then
+            printf '%s\n' "-A POSTROUTING -o $wan -j MASQUERADE"
+        fi
+        echo 'COMMIT'
+
+        if [ -n "$lan$dmz" ]; then
+            echo '*filter'
+            for l in $lan; do
+                printf '%s\n' "-A FORWARD -i $l -o $wan -j ACCEPT"
+                printf '%s\n' "-A FORWARD -i $wan -o $l -m state --state RELATED,ESTABLISHED -j ACCEPT"
+            done
+            for d in $dmz; do
+                printf '%s\n' "-A FORWARD -i $d -o $wan -j ACCEPT"
+                for l in $lan; do
+                    printf '%s\n' "-A FORWARD -i $l -o $d -j DROP"
+                    printf '%s\n' "-A FORWARD -i $d -o $l -j DROP"
+                done
+            done
+            echo 'COMMIT'
+        fi
+    } > "$tmp_rules" || { rm -f "$tmp_rules"; return 1; }
     chmod 600 "$tmp_rules" || { rm -f "$tmp_rules"; return 1; }
     restore_bin=$(command -v iptables-restore 2>/dev/null) || { rm -f "$tmp_rules"; log_error "iptables-restore not found."; return 1; }
+    if ! "$restore_bin" --test --noflush < "$tmp_rules"; then
+        rm -f "$tmp_rules"
+        log_error "Generated iptables persistence rules failed validation."
+        return 1
+    fi
     mkdir -p "$(dirname "$IPT_UNIT_FILE")" || { rm -f "$tmp_rules"; return 1; }
     tmp_unit=$(mktemp "${IPT_UNIT_FILE}.tmp.XXXXXX") || { rm -f "$tmp_rules"; return 1; }
     cat > "$tmp_unit" <<EOF
@@ -524,12 +596,14 @@ Wants=network-pre.target
 
 [Service]
 Type=oneshot
-ExecStart=$restore_bin $IPT_RESTORE_FILE
+ExecStart=$restore_bin --noflush $IPT_RESTORE_FILE
 
 [Install]
 WantedBy=multi-user.target
 EOF
     chmod 600 "$tmp_unit" || { rm -f "$tmp_rules" "$tmp_unit"; return 1; }
+    backup_file_once "$IPT_RESTORE_FILE" || { rm -f "$tmp_rules" "$tmp_unit"; return 1; }
+    backup_file_once "$IPT_UNIT_FILE" || { rm -f "$tmp_rules" "$tmp_unit"; return 1; }
     if ! mv -f "$tmp_rules" "$IPT_RESTORE_FILE"; then rm -f "$tmp_rules" "$tmp_unit"; log_error "Could not install iptables restore file."; return 1; fi
     if ! mv -f "$tmp_unit" "$IPT_UNIT_FILE"; then
         rm -f "$tmp_unit" "$IPT_RESTORE_FILE"
@@ -565,6 +639,9 @@ remove_persistence() {
         rm -f "$IPT_UNIT_FILE" && log_success "Removed $IPT_UNIT_FILE" && removed=1
         systemctl daemon-reload >/dev/null 2>&1
     fi
+    if [ -f "$SYSCTL_PERSIST_FILE" ]; then
+        rm -f "$SYSCTL_PERSIST_FILE" && log_success "Removed $SYSCTL_PERSIST_FILE" && removed=1
+    fi
     return 0
 }
 
@@ -578,49 +655,188 @@ nft_delete_nat_tool_if_present() {
 }
 
 apply_nft() {
-    local wan="$1" lan="$2" dmz="$3" candidate ifc l d old_exists=0
+    local wan="$1"
+    local lan="$2"
+    local dmz="$3"
+    local candidate
+    local ifc
+    local l
+    local d
+    local old_exists=0
+
     mkdir -p "$BACKUP_DIR" || return 1
+
     APPLY_NFT_BACKUP=$(mktemp "$BACKUP_DIR/nat-tool-nft-apply.XXXXXX") || return 1
-    if nft list table ip nat_tool > "$APPLY_NFT_BACKUP" 2>/dev/null; then old_exists=1; else : > "$APPLY_NFT_BACKUP"; fi
-    candidate=$(mktemp "$BACKUP_DIR/nat-tool-nft-candidate.XXXXXX") || { cleanup_apply_temp; return 1; }
+
+    if nft list table ip nat_tool > "$APPLY_NFT_BACKUP" 2>/dev/null; then
+        old_exists=1
+    else
+        : > "$APPLY_NFT_BACKUP"
+    fi
+
+    candidate=$(mktemp "$BACKUP_DIR/nat-tool-nft-candidate.XXXXXX") || {
+        cleanup_apply_temp
+        return 1
+    }
+
     {
-        # BUG FIX (TOCTOU): delete-then-add used to be two separate `nft -f`
-        # calls with a window in between where nat_tool did not exist at all
-        # (a crash there would drop NAT silently). Both are now folded into
-        # ONE file applied with a single `nft -f`, so nftables commits them
-        # as one atomic transaction - there is no in-between state.
-        if [ "$old_exists" -eq 1 ]; then echo 'delete table ip nat_tool'; fi
+        #------------------------------------------------------------#
+        # Replace the existing nat_tool table in one nft transaction.   #
+        #                                                            #
+        # This avoids a window where the table does not exist between  #
+        # separate "delete" and "add" nft commands.                  #
+        #------------------------------------------------------------#
+
+        if [ "$old_exists" -eq 1 ]; then
+            echo 'delete table ip nat_tool'
+        fi
+
         echo 'add table ip nat_tool'
+
+        #------------------------------------------------------------#
+        #------------------------- NAT ------------------------------#
+        #------------------------------------------------------------#
+
         echo 'add chain ip nat_tool postrouting { type nat hook postrouting priority srcnat ; }'
-        for ifc in $lan $dmz; do printf 'add rule ip nat_tool postrouting oifname "%s" iifname "%s" masquerade\n' "$wan" "$ifc"; done
-        if [ -z "$lan$dmz" ]; then printf 'add rule ip nat_tool postrouting oifname "%s" masquerade\n' "$wan"; fi
+
+        # LAN/DMZ -> WAN
+        for ifc in $lan $dmz; do
+            printf \
+                'add rule ip nat_tool postrouting oifname "%s" iifname "%s" masquerade\n' \
+                "$wan" \
+                "$ifc"
+        done
+
+        # If neither LAN nor DMZ was specified, provide a generic
+        # WAN masquerade rule.
+        if [ -z "$lan$dmz" ]; then
+            printf \
+                'add rule ip nat_tool postrouting oifname "%s" masquerade\n' \
+                "$wan"
+        fi
+
+        #
+        # FORWARD FIREWALL
+        #
         if [ -n "$lan$dmz" ]; then
+
+            #------------------------------------------------------------#
+            #---- Keep the host's existing forwarding policy intact. ----#
+            #------------------------------------------------------------#
+            # A base-chain policy applies to every forwarded packet, not
+            # merely this tool's zones. Explicit isolation rules below are
+            # sufficient to block LAN <-> DMZ traffic without breaking VPN,
+            # DNAT, or other firewall-managed forwarding paths.
             echo 'add chain ip nat_tool forward { type filter hook forward priority filter ; policy accept ; }'
-            for l in $lan; do printf 'add rule ip nat_tool forward iifname "%s" oifname "%s" accept\n' "$l" "$wan"; done
+
+            #------------------------------------------------------------#
+            #-------------- Stateful return traffic --------------------#
+            #------------------------------------------------------------#
+
+            #------------------------------------------------------------#
+            # This must be added only once. It is not dependent on       #
+            # LAN/DMZ interface count.                                   #
+            #------------------------------------------------------------#
+
+            echo 'add rule ip nat_tool forward ct state established,related accept'
+
+            #------------------------------------------------------------#
+            #------------------------ LAN -> WAN ------------------------#
+            #------------------------------------------------------------#
+            for l in $lan; do
+                printf \
+                    'add rule ip nat_tool forward iifname "%s" oifname "%s" accept\n' \
+                    "$l" \
+                    "$wan"
+            done
+
+            #
+            # DMZ -> WAN
+            #
             for d in $dmz; do
-                printf 'add rule ip nat_tool forward iifname "%s" oifname "%s" accept\n' "$d" "$wan"
-                for l in $lan; do
-                    printf 'add rule ip nat_tool forward iifname "%s" oifname "%s" drop\n' "$l" "$d"
-                    printf 'add rule ip nat_tool forward iifname "%s" oifname "%s" drop\n' "$d" "$l"
+                printf \
+                    'add rule ip nat_tool forward iifname "%s" oifname "%s" accept\n' \
+                    "$d" \
+                    "$wan"
+            done
+
+            #------------------------------------------------------------#
+            #------------------ LAN <-> DMZ isolation--------------------#
+            #------------------------------------------------------------#
+            for l in $lan; do
+                for d in $dmz; do
+
+                    # LAN -> DMZ
+                    printf \
+                        'add rule ip nat_tool forward iifname "%s" oifname "%s" drop\n' \
+                        "$l" \
+                        "$d"
+
+                    # DMZ -> LAN
+                    printf \
+                        'add rule ip nat_tool forward iifname "%s" oifname "%s" drop\n' \
+                        "$d" \
+                        "$l"
+
                 done
             done
         fi
-    } > "$candidate" || { rm -f "$candidate"; cleanup_apply_temp; return 1; }
+
+    } > "$candidate" || {
+        rm -f "$candidate"
+        cleanup_apply_temp
+        return 1
+    }
+
+    #
+    # Validate the generated ruleset before changing the live firewall.
+    #
     if ! nft -c -f "$candidate" >/dev/null 2>&1; then
-        rm -f "$candidate"; log_error "Generated nftables rules failed validation; nothing was changed."; cleanup_apply_temp; return 1
+        rm -f "$candidate"
+        log_error "Generated nftables rules failed validation; nothing was changed."
+        cleanup_apply_temp
+        return 1
     fi
+
+    #
+    # Apply the complete candidate ruleset as one nft transaction.
+    #
     if ! nft -f "$candidate" >/dev/null 2>&1; then
         log_error "nftables apply failed; restoring previous nat_tool table."
+
+        #------------------------------------------------------------#
+        # Remove the partially applied nat_tool table, if it exists. #
+        #------------------------------------------------------------#
         if nft list table ip nat_tool >/dev/null 2>&1; then
             if ! nft_delete_nat_tool_if_present; then
                 log_error "Could not remove failed nat_tool table."
             fi
         fi
-        if [ "$old_exists" -eq 1 ] && ! nft -f "$APPLY_NFT_BACKUP" >/dev/null 2>&1; then log_error "CRITICAL: failed to restore the previous nat_tool table."; fi
-        rm -f "$candidate"; cleanup_apply_temp; return 1
+
+        #--------------------------------------------#
+        # Restore the previous table if one existed. #
+        #--------------------------------------------#
+        if [ "$old_exists" -eq 1 ]; then
+            if ! nft -f "$APPLY_NFT_BACKUP" >/dev/null 2>&1; then
+                log_error "CRITICAL: failed to restore the previous nat_tool table."
+            fi
+        fi
+
+        rm -f "$candidate"
+        cleanup_apply_temp
+        return 1
     fi
+
+    #------------------------------------------------#
+    # Cleanup candidate file after successful apply. #
+    #------------------------------------------------#
     rm -f "$candidate"
+
+    #
+    # Register the managed nftables table for rollback/manifest handling.
+    #
     record nft_table "ip/nat_tool"
+
     cleanup_apply_temp
     return 0
 }
@@ -861,9 +1077,10 @@ main_wizard() {
         else
             local persist_ok=0
             if [ "$BACKEND" = "nft" ]; then
-                persist_nft && persist_ok=1
+                persist_nft && persist_forwarding && persist_ok=1
             else
-                persist_ipt && persist_ok=1
+                persist_ipt "$WAN_IFACE" "$LAN_IFACE" "$DMZ_IFACES" \
+                    && persist_forwarding && persist_ok=1
             fi
             if [ $persist_ok -eq 1 ]; then
                 log_success "NAT rules will be restored automatically at next boot."

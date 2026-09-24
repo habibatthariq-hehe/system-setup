@@ -92,23 +92,22 @@ main() {
         echo -e "${BOLD}  Available actions:${RESET}"
         
         # --- Installer Modules ---
-        echo -e "\n  ${BLUE}${BOLD}📦 Installation${RESET}"
+        echo -e "\n  ${BLUE}${BOLD} Installation${RESET}"
         echo "    1) Install Browser"
         echo "    2) Install ZSH"
         echo "    3) Install Fonts"
         echo "    4) Setup Webmail Server"
         
         # --- Networking Modules ---
-        echo -e "\n  ${BLUE}${BOLD}🌐 Networking${RESET}"
+        echo -e "\n  ${BLUE}${BOLD} Networking${RESET}"
         echo "    5) DHCP Setup Wizard"
-        echo "    6) DHCP Auto Setup"
-        echo "    7) Enable NAT Gateway"
-        echo "    8) BIND Internal DNS Setup"
-        echo "    9) Configure Static IP"
-        echo "    10) Configure SSH Server"
+        echo "    6) Enable NAT Gateway"
+        echo "    7) BIND Internal DNS Setup"
+        echo "    8) Configure Static IP"
+        echo "    9) Configure SSH Server"
         
         echo ""
-        echo "   11) Exit"
+        echo "   0) Exit"
         print_separator
 
         read -p "  Enter your choice [1-11]: " choice
@@ -119,12 +118,11 @@ main() {
             3) clear; print_banner; run_script "installer/font.sh"                 "Font installer"              ;;
             4) clear; print_banner; run_script "installer/webmail.sh"              "Webmail setup"               ;;
             5) clear; print_banner; run_script "networking/dhcp-setup.sh"           "DHCP setup wizard"           ;;
-            6) clear; print_banner; run_script "networking/dhcp-auto.sh"             "DHCP auto setup"             ;;
-            7) clear; print_banner; run_script "networking/nat.sh"                  "NAT enabler"                 ;;
-            8) clear; print_banner; run_script "networking/dns-setup.sh"              "Bind (Internal DNS) setup"   ;;
-            9) clear; print_banner; run_script "networking/static-ip-setup.sh"       "Static IP setup"             ;;
-            10) clear; print_banner; run_script "networking/ssh.sh"                  "SSH server setup"             ;;
-            11) clear; echo "Exiting..."; exit 0 ;;
+            6) clear; print_banner; run_script "networking/nat.sh"                  "NAT enabler"                 ;;
+            7) clear; print_banner; run_script "networking/dns-setup.sh"              "Bind (Internal DNS) setup"   ;;
+            8) clear; print_banner; run_script "networking/static-ip-setup.sh"       "Static IP setup"             ;;
+            9) clear; print_banner; run_script "networking/ssh.sh"                  "SSH server setup"             ;;
+            0) clear; echo "Exiting..."; exit 0 ;;
             *) clear; print_banner; echo -e "${RED}  Invalid choice. Please try again.${RESET}" ;;
         esac
 

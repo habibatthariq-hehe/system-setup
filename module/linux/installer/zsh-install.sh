@@ -65,6 +65,11 @@ log_error()   { echo -e "  ${RED}${BOLD}[ERROR]${RESET}   $1"; }
 
 # ----------------------------- Manifest / Rollback engine ---------------------
 
+check_package_manager(){
+  command -v apt-get 2>/dev/null
+  command -v dnf 2>/dev/null
+}
+
 manifest_init() {
     : > "$MANIFEST"
 }
