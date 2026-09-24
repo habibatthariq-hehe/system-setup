@@ -1,218 +1,140 @@
-# 🛠️ Personal System-Configuration & Automation Suite
+# 🐧 Linux System Setup & Automation Toolkit
 
 [![OS - Linux](https://img.shields.io/badge/OS-Linux-FCC624?logo=linux&logoColor=black)](#)
-[![OS - Windows](https://img.shields.io/badge/OS-Windows-0078D6?logo=windows&logoColor=white)](#)
-[![Python - 3.8+](https://img.shields.io/badge/Python-3.8%2B-3776AB?logo=python&logoColor=white)](#)
-[![Bash - Supported](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnu-bash&logoColor=white)](#)
-[![PowerShell - 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)](#)
-[![Status - Active](https://img.shields.io/badge/Status-Active%20Development-success)](#)
+[![Shell - Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnu-bash&logoColor=white)](#)
+[![Status - Active](https://img.shields.io/badge/Status-Active-success)](#)
 
-A modular, automated system provisioning and configuration toolkit designed to streamline post-installation setups, server deployments, network service configurations, and desktop customization across **Linux** (Debian/Ubuntu, Fedora/RHEL) and **Windows**.
-
----
-
-## 📑 Table of Contents
-
-- [Overview](#-overview)
-- [Key Features](#-key-features)
-- [Project Architecture](#-project-architecture)
-- [Quick Start](#-quick-start)
-  - [1. Universal Cross-Platform Launcher](#1-universal-cross-platform-launcher)
-  - [2. Interactive Linux Management CLI](#2-interactive-linux-management-cli)
-  - [3. Modular Linux Shell Dispatcher](#3-modular-linux-shell-dispatcher)
-- [Modules & Capabilities](#-modules--capabilities)
-  - [📦 Package Management & Profiles](#-package-management--profiles)
-  - [⚙️ System Services & Daemon Control](#️-system-services--daemon-control)
-  - [🌐 Networking & Infrastructure](#-networking--infrastructure)
-  - [🎨 Desktop & Environment Customization](#-desktop--environment-customization)
-  - [🔍 Live Diagnostics & Monitoring](#-live-diagnostics--monitoring)
-  - [🪟 Windows Tools](#-windows-tools)
-- [Configuration Templates](#-configuration-templates)
-- [Safety & Dry-Run Mode](#-safety--dry-run-mode)
-- [License & Disclaimer](#-license--disclaimer)
-
----
-
-## 🌟 Overview
-
-Setting up a fresh operating system installation or provisioning server services usually requires repetitive commands, manual configuration file editing, and tedious software installations. 
-
-This repository consolidates these processes into an extensible CLI and modular script suite:
-- **Zero-Friction Provisioning**: One command to launch setup wizards for desktop environments or headless servers.
-- **Multi-Distro Intelligence**: Automatically detects whether your system runs `apt` (Debian/Ubuntu) or `dnf` (Fedora/RHEL/CentOS) and maps appropriate service names (e.g., `apache2` vs `httpd`, `bind9` vs `named`).
-- **Production-Grade Network Automation**: Interactive wizards to configure DHCP servers, internal BIND9 DNS zones, NAT iptables routing, and SSH hardening.
-- **Safety First**: Integrated **Dry-Run mode** allowing you to preview command execution paths before making system-level changes.
-
----
-
-## 🚀 Key Features
-
-- 🖥️ **Interactive Python CLI (`script.py`)**:
-  - Full-featured ANSI terminal interface with menu navigation and color-coded statuses.
-  - Profile selection: **Desktop** vs. **Server**.
-  - Package manager abstraction supporting `apt` and `dnf`.
-  - Comprehensive service management (start, stop, status, enable, disable) for 8+ major Linux services.
-  - Live system resource and network diagnostics.
-
-- 🎯 **Cross-Platform Launcher (`runner.py`)**:
-  - Host OS detection (Linux, Windows, macOS).
-  - Automatically dispatches to the corresponding OS subsystem (`main-linux.sh`, `main-win.ps1`).
-
-- 🌐 **Network & Infrastructure Wizards (`module/linux/networking/`)**:
-  - **DHCP Setup**: ISC-DHCP Server guided configuration wizard and automated setup with subnet declarations and interface binding.
-  - **DNS Setup (BIND9)**: Forward/reverse lookup zone generator with configuration templating.
-  - **NAT & IP Forwarding**: Automated iptables NAT forwarding and packet routing enablement.
-  - **SSH Hardening**: Key generation, authorized keys setup, and daemon configuration.
-
-- 🎨 **Desktop Enhancement & Installers (`module/linux/installer/`)**:
-  - **ZSH & Powerlevel10k**: Automated ZSH installation, Oh-My-Zsh integration, plugins (`zsh-autosuggestions`, `zsh-syntax-highlighting`), and Powerlevel10k theme setup.
-  - **Nerd Fonts**: Rapid font downloader and system font-cache rebuilder.
-  - **Web Browsers & Mail**: Post-install installers for modern web clients and webmail environments.
-
-- 🪟 **Windows Automation (`module/windows/`)**:
-  - PowerShell-based administration tools, including Windows OpenSSH service setup and key management.
-
----
-
-## 📂 Project Architecture
-
-```
-system-setup/
-├── runner.py                    # Cross-platform entry point (detects OS & launches dispatcher)
-├── script.py                    # Comprehensive interactive Python CLI for Linux
-├── config/                      # Sample configurations & templates
-│   ├── dhcp.conf                # ISC DHCP server configuration template
-│   ├── named.conf.options       # BIND9 DNS options template
-│   └── 1.db.lks.id              # Sample forward/reverse DNS zone file
-├── module/
-│   ├── linux/                   # Linux modular scripts
-│   │   ├── main-linux.sh        # Linux interactive shell launcher
-│   │   ├── installer/           # Desktop & software installation scripts
-│   │   │   ├── browser.sh       # Web browser installer
-│   │   │   ├── font.sh          # Nerd font installer & cache updater
-│   │   │   ├── webmail.sh       # Webmail setup script
-│   │   │   └── zsh-install.sh   # ZSH + Oh-My-Zsh + Powerlevel10k installer
-│   │   └── networking/          # Network service configuration wizards
-│   │       ├── dhcp-setup.sh    # Comprehensive ISC-DHCP wizard & validator
-│   │       ├── dns-setup.sh     # BIND9 internal DNS configuration wizard
-│   │       ├── nat.sh           # IPTables NAT & routing configuration
-│   │       └── ssh.sh           # Linux SSH server setup & key management
-│   └── windows/                 # Windows PowerShell automation modules
-│       ├── main-win.ps1         # Windows entry script
-│       └── tools/
-│           └── win-ssh.ps1      # Windows OpenSSH client & server configuration tool
-└── README.md                    # Project documentation
-```
+A modular collection of interactive Bash scripts designed to automate Linux system provisioning, post-installation tasks, network service deployments, and terminal environment setups.
 
 ---
 
 ## ⚡ Quick Start
 
-### 1. Universal Cross-Platform Launcher
-
-Run the root runner with Python 3. It will detect your host OS and launch the appropriate suite:
+### 1. Interactive Menu (Recommended)
+Launch the central menu to run any configuration or installer interactively:
 
 ```bash
-python3 runner.py
+git clone https://github.com/habibatthariq-hehe/system-setup.git
+cd system-setup
+sudo bash module/linux/main-linux.sh
 ```
 
-### 2. Interactive Linux Management CLI
-
-For direct access to the full-featured Linux system manager with profile selection, package installations, and systemd service controllers:
-
-```bash
-# Optional: run with sudo if installing packages or managing services
-sudo python3 script.py
-```
-
-### 3. Modular Linux Shell Dispatcher
-
-To run standalone bash automation modules on Linux directly:
+### 2. Standalone Execution
+Every module can also be executed directly on its own without going through the main menu:
 
 ```bash
-cd module/linux
-chmod +x main-linux.sh
-./main-linux.sh
+# Setup WireGuard VPN
+sudo bash module/linux/networking/wireguard.sh
+
+# Configure NAT Gateway
+sudo bash module/linux/networking/nat.sh
+
+# Setup ISC-DHCP Server
+sudo bash module/linux/networking/dhcp-setup.sh
+
+# Configure Static IP
+sudo bash module/linux/networking/static-ip-setup.sh
+
+# Install ZSH + Oh-My-Zsh + Powerlevel10k
+bash module/linux/installer/zsh-install.sh
 ```
 
 ---
 
-## 🔧 Modules & Capabilities
+## 📦 Modules Overview
 
-### 📦 Package Management & Profiles
+### 🌐 Networking & Server Services (`module/linux/networking/`)
 
-Easily switch between **Desktop** and **Server** installation profiles with support for:
-
-| Package Manager | Supported Distros | Features |
+| Script | Description | Highlights |
 | :--- | :--- | :--- |
-| **APT** | Debian, Ubuntu, Linux Mint, Pop!_OS | System update/upgrade, Timeshift, ZSH, btop/htop, BIND9, ISC DHCP, Apache2, Nginx, Samba, Tailscale, Firewalld |
-| **DNF** | Fedora, RHEL, Rocky Linux, AlmaLinux | System upgrade, clean cache, RPM Fusion (Free & Non-Free), Nvidia Akmod drivers, Flatpak & Flathub, Tailscale, Developer toolchain |
+| **`wireguard.sh`** | WireGuard VPN Setup & Management | Interactive server/client setup, key generation, peer management, and interface controls. |
+| **`nat.sh`** | NAT Gateway & Packet Forwarding | Supports `nftables` & `iptables`, interface auto-detection, reboot persistence, and `--rollback`. |
+| **`dhcp-setup.sh`** | ISC-DHCP Server Configuration | Guided wizard for subnet pools, interfaces, gateways, DNS forwarders, and syntax validation. |
+| **`dns-setup.sh`** | BIND9 & Dnsmasq DNS Server | Internet resolve-only caching mode, forward/reverse zones, and syntax checking. |
+| **`static-ip-setup.sh`** | Static IP Configuration | Automated interface IP setup, config backup, and `--dry-run` testing. |
+| **`ssh.sh`** | SSH Hardening & Key Management | Key pair generation, target deployment via `ssh-copy-id`, and rollback support. |
+| **`hostname-setup.sh`** | System Hostname Tool | Quick interactive tool to view and change the system hostname. |
+| **`webmail.sh`** | Mail Server Setup | Automated deployment for Postfix, Dovecot, and Roundcube webmail. |
 
-### ⚙️ System Services & Daemon Control
+### 🎨 Desktop & Environment (`module/linux/installer/`)
 
-The CLI provides unified systemd service lifecycle control (`start`, `stop`, `status`, `enable`, `disable`), automatically handling distribution-specific service naming:
-
-| Service | Debian / Ubuntu Name | Fedora / RHEL Name |
+| Script | Description | Highlights |
 | :--- | :--- | :--- |
-| **Web Server (Apache)** | `apache2` | `httpd` |
-| **Web Server (Nginx)** | `nginx` | `nginx` |
-| **SSH Daemon** | `ssh` | `sshd` |
-| **DNS Server (BIND9)** | `bind9` | `named` |
-| **DHCP Server** | `isc-dhcp-server` | `dhcpd` |
-| **DHCP Relay** | `isc-dhcp-relay` | `dhcrelay` |
-| **File Sharing (Samba)**| `smbd` | `smb` |
-| **Firewall** | `firewalld` | `firewalld` |
-| **Network Manager** | `systemd-networkd` | `systemd-networkd` |
+| **`zsh-install.sh`** | ZSH + Oh-My-Zsh + Powerlevel10k | Installs ZSH, syntax highlighting, autosuggestions, fonts, and sets default shell (with `--rollback`). |
+| **`font.sh`** | MesloLGS Nerd Font Installer | Downloads required fonts for Powerlevel10k terminal icons and updates font cache. |
+| **`browser.sh`** | Web Browser Installer | One-click installation for popular web browsers across `apt`, `dnf`, and `yum`. |
+| **`webmail.sh`** | Webmail Client | Webmail client installer component. |
 
-### 🌐 Networking & Infrastructure
+### 📁 Config Templates (`config/`)
 
-- **DHCP Setup (`dhcp-setup.sh`)**: Interactive wizard supporting interface selection, IP range pools, gateway definition, subnet masks, DNS forwarders, lease time configuration, and verification tests.
-- **BIND9 DNS (`dns-setup.sh`)**: Automatic creation of forward lookup zones, reverse PTR records, and upstream forwarders for local networks.
-- **NAT Gateway (`nat.sh`)**: Configures kernel packet forwarding (`net.ipv4.ip_forward=1`) and sets up iptables `MASQUERADE` rules for multi-NIC routing.
-
-### 🎨 Desktop & Environment Customization
-
-- **ZSH & Powerlevel10k (`zsh-install.sh`)**:
-  - Installs ZSH and sets it as the default user shell.
-  - Deploys Oh-My-Zsh framework.
-  - Automatically clones and configures Powerlevel10k, `zsh-syntax-highlighting`, and `zsh-autosuggestions`.
-- **Nerd Fonts (`font.sh`)**: Downloads popular coding fonts (e.g., MesloLGS NF, JetBrains Mono) directly to `~/.local/share/fonts` and updates `fc-cache`.
-
-### 🔍 Live Diagnostics & Monitoring
-
-Quick inspection options built into `script.py`:
-- 🌐 Network interfaces and active IP assignments (`ip a`)
-- 🔌 Active listening TCP/UDP ports and sockets (`ss -tulpn`)
-- 💾 Real-time disk partition usage (`df -h`)
-- 🧠 Memory & swap consumption (`free -h`)
-- ⚠️ Failed systemd units inspection (`systemctl --failed`)
-- ⏱️ Uptime and CPU load averages (`uptime`)
-- 📊 Interactive monitors (`btop`, `htop`)
-
-### 🪟 Windows Tools
-
-- **OpenSSH Configuration (`win-ssh.ps1`)**: Installs Windows OpenSSH capabilities, configures the `sshd` service, manages firewall rules, and assists with key generation and deployment.
+- **`deb-*-sources.list`**: Ready-to-use repository mirror lists for Debian 10 (Buster), 11 (Bullseye), 12 (Bookworm), and 13 (Trixie).
+- **`dhcp.conf`**: Baseline ISC-DHCP server configuration template.
+- **`named.conf.options`**: BIND9 DNS server forwarding and access control template.
+- **`1.db.lks.id`**: Sample DNS forward and reverse zone file.
 
 ---
 
-## 🛡️ Safety & Dry-Run Mode
+## 🛡️ Safety & Rollback Support
 
-`script.py` includes a built-in **Dry-Run mode**:
-- Press `d` from the main menu to toggle Dry-Run on or off.
-- When enabled, commands will be logged with full parameters to the console without executing them on the host system.
-- Ideal for testing script modifications and verifying command workflows safely.
+Many scripts in this repository include built-in safety mechanisms:
+- **Rollback**: Revert changes made by scripts using the `--rollback` flag:
+  ```bash
+  sudo bash module/linux/networking/nat.sh --rollback
+  bash module/linux/installer/zsh-install.sh --rollback
+  ```
+- **Status Inspection**: Check active configurations using `--status` where supported:
+  ```bash
+  sudo bash module/linux/networking/nat.sh --status
+  ```
+- **Dry-Run Mode**: Preview changes before executing them using `--dry-run`:
+  ```bash
+  sudo bash module/linux/networking/static-ip-setup.sh --dry-run
+  ```
 
 ---
 
-## 📋 Configuration Templates
+## 📂 Project Structure
 
-The `config/` directory includes reference configuration templates used by the automation wizards:
-- `dhcp.conf`: Default ISC-DHCP server subnet and pool template.
-- `named.conf.options`: BIND9 DNS forwarding and security options template.
-- `1.db.lks.id`: Zone definition sample for domain resolution testing.
+```
+system-setup/
+├── config/                      # Sample configurations & repository lists
+│   ├── deb-10-sources.list      # Debian 10 (Buster) sources
+│   ├── deb-11-sources.list      # Debian 11 (Bullseye) sources
+│   ├── deb-12-sources.list      # Debian 12 (Bookworm) sources
+│   ├── deb-13-sources.list      # Debian 13 (Trixie) sources
+│   ├── dhcp.conf                # ISC-DHCP configuration template
+│   ├── named.conf.options       # BIND9 options template
+│   └── 1.db.lks.id              # Sample DNS zone configuration
+├── module/
+│   └── linux/
+│       ├── main-linux.sh        # Interactive central dispatcher
+│       ├── installer/           # Environment & software installers
+│       │   ├── browser.sh       # Web browser installer
+│       │   ├── font.sh          # Nerd font downloader
+│       │   ├── webmail.sh       # Mail & Roundcube setup
+│       │   └── zsh-install.sh   # ZSH + OMZ + P10k installer
+│       └── networking/          # Network service configuration tools
+│           ├── dhcp-setup.sh    # ISC-DHCP interactive wizard
+│           ├── dns-setup.sh     # BIND9 / Dnsmasq setup
+│           ├── hostname-setup.sh# Hostname configuration
+│           ├── nat.sh           # NAT & packet forwarding (nftables/iptables)
+│           ├── ssh.sh           # SSH keys & server configuration
+│           ├── static-ip-setup.sh# Static IP configuration tool
+│           ├── webmail.sh       # Webmail server setup
+│           └── wireguard.sh     # WireGuard VPN manager
+└── README.md
+```
+
+---
+
+## 📋 Prerequisites
+
+- **Operating System**: Linux (Debian, Ubuntu, Fedora, RHEL, CentOS, or compatible distributions)
+- **Privileges**: Root or `sudo` access for system and networking configurations
+- **Dependencies**: `bash`, `curl`, `wget`, `git`
 
 ---
 
 ## 📄 License & Notes
 
-This repository is maintained for personal system administration and automation workflows. Feel free to fork, adapt, and customize the scripts to fit your own operating system configurations!
+Maintained for personal system administration, server provisioning, and lab automation workflows. Adapt and customize as needed for your own environment.
