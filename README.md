@@ -4,7 +4,7 @@
 [![Shell - Bash](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnu-bash&logoColor=white)](#)
 [![Status - Active](https://img.shields.io/badge/Status-Active-success)](#)
 
-A modular collection of interactive Bash scripts designed to automate Linux system provisioning, post-installation tasks, network service deployments, and terminal environment setups.
+A modular collection of interactive Bash scripts designed to automate Linux system provisioning, post-installation tasks, network service deployments, and terminal environment setups. Some script maybe contain some bug and error cause it's still on development and testing, please backup your configuration before using it.
 
 ---
 
