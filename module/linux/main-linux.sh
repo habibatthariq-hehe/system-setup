@@ -110,7 +110,7 @@ main() {
         echo "   0) Exit"
         print_separator
 
-        read -p "  Enter your choice [1-11]: " choice
+        read -p "  Enter your choice [0-9]: " choice
 
         case $choice in
             1) clear; print_banner; run_script "installer/browser.sh"              "Browser installer"            ;;
