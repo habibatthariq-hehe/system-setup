@@ -755,6 +755,8 @@ toggle_interface() {
     esac
 }
 
+
+
 main_menu() {
     check_root
 
@@ -771,7 +773,10 @@ main_menu() {
         print_separator
         echo -e "  ${DIM}First time setting up a tunnel? Run these on EACH machine (server AND"
         echo -e "  every client), in order: 1 -> 2 -> 3 -> 4 -> 6. Each machine generates its"
-        echo -e "  own keypair in step 2 - never copy a private key between machines.${RESET}"
+        echo -e "  own keypair in step 2 - never copy a private key between machines."
+        echo -e "  To enable internet access trough wireguard vpn, you need to enable "
+        echo -e "  nat and ip forwarding in the vpn server side and you can do that by using nat.sh script"
+        echo -e "   ${YELLOW}(you need to run it on the vpn server side)${RESET}"
         print_separator
 
         read -rp "  Select Option [0-6]: " OPT
