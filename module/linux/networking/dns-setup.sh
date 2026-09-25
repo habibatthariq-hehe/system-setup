@@ -3,13 +3,14 @@
 # ==============================================================================
 # DNS SERVER & RESOLVER SETUP TOOL
 # Features:
-#   * Multi-distro package detection & installation (apt, dnf, pacman, zypper)
+#   * Multi-distro package detection & installation (apt, dnf)
 #   * Internet Resolve-Only Mode: Configure BIND9 or DNSMASQ as a high-performance
 #     caching DNS forwarder that only resolves from public internet upstream DNS
 #     (Cloudflare, Google, Quad9, OpenDNS, or custom upstream servers)
 #   * Automated config syntax verification (named-checkconf / dnsmasq --test)
 #   * Real-time DNS resolution testing (dig / nslookup / host)
 #   * Safe backup & rollback support
+#   * Cancel options in every setup, prompt, and menu
 # ==============================================================================
 
 set -o pipefail
@@ -34,6 +35,8 @@ BIND_PKG=""
 BIND_SERVICE=""
 BIND_CONF_DIR=""
 BIND_OPTIONS_FILE=""
+ZONES_DB_DIR=""
+NAMED_LOCAL_FILE=""
 DNSMASQ_PKG="dnsmasq"
 DNSMASQ_SERVICE="dnsmasq"
 DNSMASQ_CONF="/etc/dnsmasq.conf"
@@ -72,9 +75,18 @@ is_valid_ipv4() {
     return 0
 }
 
+# Validate a domain-ish name (zone name)
+is_valid_zone_name() {
+    local z="$1"
+    [[ "$z" =~ ^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$ ]]
+}
+
 # ----------------------------- Environment & Distro Detection -----------------
 
 check_privileges() {
+    if [ "${SKIP_ROOT_CHECK:-false}" = "true" ]; then
+        return 0
+    fi
     if [ "$(id -u)" -ne 0 ]; then
         log_error "This script requires root privileges. Please run with sudo."
         exit 1
@@ -98,28 +110,17 @@ detect_environment() {
         BIND_SERVICE="named"
         BIND_CONF_DIR="/etc"
         BIND_OPTIONS_FILE="/etc/named.conf"
-    elif command -v pacman &> /dev/null; then
-        PKG_MANAGER="pacman"
-        DISTRO_FAMILY="arch"
-        BIND_PKG="bind bind-tools"
-        BIND_SERVICE="named"
-        BIND_CONF_DIR="/etc"
-        BIND_OPTIONS_FILE="/etc/named.conf"
-    elif command -v zypper &> /dev/null; then
-        PKG_MANAGER="zypper"
-        DISTRO_FAMILY="suse"
-        BIND_PKG="bind bind-utils"
-        BIND_SERVICE="named"
-        BIND_CONF_DIR="/etc"
-        BIND_OPTIONS_FILE="/etc/named.conf"
     else
-        log_error "Supported package manager not found (apt-get, dnf, pacman, zypper required)."
+        log_error "Supported package manager not found (apt-get, dnf required)."
         exit 1
     fi
 
-    mkdir -p "$BACKUP_DIR"
-    mkdir -p "$(dirname "$MANIFEST")"
-    touch "$MANIFEST"
+    ZONES_DB_DIR="${BIND_CONF_DIR}/zones"
+    NAMED_LOCAL_FILE="${BIND_CONF_DIR}/named.conf.local"
+
+    mkdir -p "$BACKUP_DIR" 2>/dev/null || true
+    mkdir -p "$(dirname "$MANIFEST")" 2>/dev/null || true
+    touch "$MANIFEST" 2>/dev/null || true
 }
 
 backup_file() {
@@ -137,6 +138,13 @@ backup_file() {
 # ----------------------------- Package Installation ---------------------------
 
 install_dnsmasq() {
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' to return to the menu.${RESET}\n"
+    read -p "  Proceed with installing DNSMASQ via ${PKG_MANAGER}? [Y/n/c]: " confirm
+    if is_cancel "$confirm" || [[ "$confirm" =~ ^[Nn]$ ]]; then
+        log_warn "Installation cancelled by user."
+        return 1
+    fi
+
     log_info "Installing DNSMASQ using ${PKG_MANAGER}..."
     local install_rc=0
     case "$PKG_MANAGER" in
@@ -144,20 +152,25 @@ install_dnsmasq() {
             apt-get update -y && apt-get install -y dnsmasq dnsutils || install_rc=$? ;;
         dnf)
             dnf install -y dnsmasq bind-utils || install_rc=$? ;;
-        pacman)
-            pacman -Sy --noconfirm dnsmasq bind-tools || install_rc=$? ;;
-        zypper)
-            zypper --non-interactive install dnsmasq bind-utils || install_rc=$? ;;
     esac
 
     if [ $install_rc -eq 0 ]; then
         log_success "DNSMASQ installed successfully."
+        return 0
     else
         log_error "Failed to install DNSMASQ."
+        return 1
     fi
 }
 
 install_bind9() {
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' to return to the menu.${RESET}\n"
+    read -p "  Proceed with installing BIND9 (${BIND_PKG}) via ${PKG_MANAGER}? [Y/n/c]: " confirm
+    if is_cancel "$confirm" || [[ "$confirm" =~ ^[Nn]$ ]]; then
+        log_warn "Installation cancelled by user."
+        return 1
+    fi
+
     log_info "Installing BIND9 using ${PKG_MANAGER}..."
     local install_rc=0
     case "$PKG_MANAGER" in
@@ -165,16 +178,14 @@ install_bind9() {
             apt-get update -y && apt-get install -y $BIND_PKG || install_rc=$? ;;
         dnf)
             dnf install -y $BIND_PKG || install_rc=$? ;;
-        pacman)
-            pacman -Sy --noconfirm $BIND_PKG || install_rc=$? ;;
-        zypper)
-            zypper --non-interactive install $BIND_PKG || install_rc=$? ;;
     esac
 
     if [ $install_rc -eq 0 ]; then
         log_success "BIND9 installed successfully."
+        return 0
     else
         log_error "Failed to install BIND9."
+        return 1
     fi
 }
 
@@ -188,8 +199,14 @@ select_upstream_dns() {
     echo "    3) Quad9 DNS             (9.9.9.9, 149.112.112.112) [Malware Blocking]"
     echo "    4) OpenDNS / Cisco       (208.67.222.222, 208.67.220.220)"
     echo "    5) Custom Upstream IPs   (Specify your own public DNS servers)"
+    echo "    0) Cancel"
     echo ""
-    read -p "  Enter choice [1-5, default: 1]: " dns_choice
+    read -p "  Enter choice [1-5, default: 1, or 'c' to cancel]: " dns_choice
+
+    if is_cancel "$dns_choice" || [ "$dns_choice" = "0" ]; then
+        log_warn "Upstream DNS selection cancelled."
+        return 1
+    fi
 
     case "$dns_choice" in
         2)
@@ -207,15 +224,25 @@ select_upstream_dns() {
         5)
             DNS_PROVIDER_NAME="Custom DNS"
             echo ""
-            read -p "  Enter primary DNS IP: " custom_dns1
-            if is_cancel "$custom_dns1"; then return 1; fi
+            read -p "  Enter primary DNS IP (or 'c' to cancel): " custom_dns1
+            if is_cancel "$custom_dns1"; then
+                log_warn "Upstream DNS configuration cancelled."
+                return 1
+            fi
             while ! is_valid_ipv4 "$custom_dns1"; do
                 log_error "Invalid IPv4 address."
                 read -p "  Enter primary DNS IP (or 'c' to cancel): " custom_dns1
-                if is_cancel "$custom_dns1"; then return 1; fi
+                if is_cancel "$custom_dns1"; then
+                    log_warn "Upstream DNS configuration cancelled."
+                    return 1
+                fi
             done
 
-            read -p "  Enter secondary DNS IP (optional, press Enter to skip): " custom_dns2
+            read -p "  Enter secondary DNS IP (optional, press Enter to skip, or 'c' to cancel): " custom_dns2
+            if is_cancel "$custom_dns2"; then
+                log_warn "Upstream DNS configuration cancelled."
+                return 1
+            fi
             if [ -n "$custom_dns2" ] && ! is_valid_ipv4 "$custom_dns2"; then
                 log_warn "Secondary IP invalid, skipping secondary."
                 custom_dns2=""
@@ -224,9 +251,13 @@ select_upstream_dns() {
             UPSTREAM_SERVERS=("$custom_dns1")
             [ -n "$custom_dns2" ] && UPSTREAM_SERVERS+=("$custom_dns2")
             ;;
-        *)
+        1|"")
             UPSTREAM_SERVERS=("1.1.1.1" "1.0.0.1")
             DNS_PROVIDER_NAME="Cloudflare DNS"
+            ;;
+        *)
+            log_error "Invalid choice: ${dns_choice}"
+            return 1
             ;;
     esac
     return 0
@@ -236,11 +267,12 @@ select_upstream_dns() {
 
 setup_internet_resolve_bind9() {
     log_info "Configuring BIND9 in Internet Resolve-Only mode (Forwarder)..."
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at any prompt to abort.${RESET}\n"
 
     # Ensure bind is installed
     if ! command -v named &> /dev/null; then
         log_warn "BIND9 is not installed. Installing now..."
-        install_bind9
+        install_bind9 || return 1
     fi
 
     select_upstream_dns || return 1
@@ -251,8 +283,14 @@ setup_internet_resolve_bind9() {
     echo "    1) Localhost and Local Subnets (127.0.0.1, 192.168.0.0/16, 10.0.0.0/8, 172.16.0.0/12) [Recommended]"
     echo "    2) Any client (0.0.0.0/0 - Open recursive resolver)"
     echo "    3) Localhost only (127.0.0.1)"
+    echo "    0) Cancel"
     echo ""
-    read -p "  Enter choice [1-3, default: 1]: " acl_choice
+    read -p "  Enter choice [1-3, default: 1, or 'c' to cancel]: " acl_choice
+
+    if is_cancel "$acl_choice" || [ "$acl_choice" = "0" ]; then
+        log_warn "Configuration cancelled by user. No changes made."
+        return 1
+    fi
 
     local acl_block=""
     case "$acl_choice" in
@@ -262,8 +300,12 @@ setup_internet_resolve_bind9() {
         3)
             acl_block="127.0.0.1; ::1;"
             ;;
-        *)
+        1|"")
             acl_block="127.0.0.1; ::1; 192.168.0.0/16; 10.0.0.0/8; 172.16.0.0/12;"
+            ;;
+        *)
+            log_error "Invalid choice: ${acl_choice}"
+            return 1
             ;;
     esac
 
@@ -367,11 +409,12 @@ EOF
 
 setup_internet_resolve_dnsmasq() {
     log_info "Configuring DNSMASQ in Internet Resolve-Only mode (Forwarder)..."
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at any prompt to abort.${RESET}\n"
 
     # Ensure dnsmasq is installed
     if ! command -v dnsmasq &> /dev/null; then
         log_warn "DNSMASQ is not installed. Installing now..."
-        install_dnsmasq
+        install_dnsmasq || return 1
     fi
 
     select_upstream_dns || return 1
@@ -420,8 +463,11 @@ EOF
     # Handle systemd-resolved conflict on port 53 if active
     if systemctl is-active --quiet systemd-resolved; then
         log_warn "systemd-resolved is active and may occupy port 53."
-        read -p "  Disable systemd-resolved DNS stub listener to avoid port 53 conflicts? [Y/n]: " disable_stub
-        if [[ ! "$disable_stub" =~ ^(n|N|no|No)$ ]]; then
+        read -p "  Disable systemd-resolved DNS stub listener to avoid port 53 conflicts? [Y/n/c]: " disable_stub
+        if is_cancel "$disable_stub"; then
+            log_warn "Configuration cancelled by user."
+            return 1
+        elif [[ ! "$disable_stub" =~ ^(n|N|no|No)$ ]]; then
             mkdir -p /etc/systemd/resolved.conf.d
             cat <<EOF > /etc/systemd/resolved.conf.d/disable-stub.conf
 [Resolve]
@@ -451,23 +497,31 @@ configure_internet_resolve_mode() {
     print_separator
     echo "    1) Configure BIND9 as Internet Resolve-Only forwarder"
     echo "    2) Configure DNSMASQ as Internet Resolve-Only forwarder"
-    echo "    0) Return to Main Menu"
+    echo "    0) Return to Main Menu / Cancel"
     echo ""
-    read -p "  Choose backend [1-2, default: 1]: " backend_choice
+    read -p "  Choose backend [1-2, default: 1, or 'c' to cancel]: " backend_choice
 
+    local res=0
     case "$backend_choice" in
         2)
-            setup_internet_resolve_dnsmasq
+            setup_internet_resolve_dnsmasq || res=$?
             ;;
-        0)
+        0|c|C|cancel|CANCEL|q|Q|quit|QUIT|exit|EXIT)
+            log_warn "Cancelled."
             return 0
             ;;
+        1|"")
+            setup_internet_resolve_bind9 || res=$?
+            ;;
         *)
-            setup_internet_resolve_bind9
+            log_error "Invalid choice: ${backend_choice}"
+            return 1
             ;;
     esac
 
-    test_dns_resolution
+    if [ $res -eq 0 ]; then
+        test_dns_resolution
+    fi
 }
 
 # ----------------------------- Verification & Testing -------------------------
@@ -548,13 +602,13 @@ show_service_status() {
 bind9_status() {
     print_separator
     echo -n "  BIND9 (${BIND_SERVICE}): "
-    systemctl status named.service
+    systemctl status "${BIND_SERVICE}.service" 2>/dev/null || systemctl status named.service
 }
 
 dnsmasq_status() {
     print_separator
     echo -n "  DNSMASQ (${DNSMASQ_SERVICE}): "
-    systemctl status dnsmasq.service
+    systemctl status "${DNSMASQ_SERVICE}.service"
 }
 
 rollback_config() {
@@ -581,9 +635,13 @@ rollback_config() {
         return 0
     fi
 
+    echo "    0) Cancel"
     echo ""
     read -p "  Enter backup number to restore (or 'c' to cancel): " restore_idx
-    if is_cancel "$restore_idx"; then return 0; fi
+    if is_cancel "$restore_idx" || [ "$restore_idx" = "0" ]; then
+        log_warn "Rollback cancelled."
+        return 0
+    fi
 
     local current=0
     local restored=0
@@ -600,8 +658,11 @@ rollback_config() {
     done < "$MANIFEST"
 
     if [ "$restored" -eq 1 ]; then
-        read -p "  Restart DNS service now? [Y/n]: " restart_svc
-        if [[ ! "$restart_svc" =~ ^(n|N|no|No)$ ]]; then
+        read -p "  Restart DNS service now? [Y/n/c]: " restart_svc
+        if is_cancel "$restart_svc"; then
+            log_warn "Service restart cancelled."
+            return 0
+        elif [[ ! "$restart_svc" =~ ^(n|N|no|No)$ ]]; then
             # BUG FIX: only restart services that are actually installed/active
             # to avoid spurious errors when only one backend was configured.
             if systemctl list-unit-files "${BIND_SERVICE}.service" &>/dev/null && \
@@ -618,85 +679,344 @@ rollback_config() {
     fi
 }
 
+# ----------------------------- Local LAN Zone Setup (BIND9) -------------------
+
+setup_local_zone_bind9() {
+    log_info "Configuring Local LAN DNS Zone (BIND9)..."
+    echo -e "  ${DIM}Tip: Type 'c' or 'cancel' at any prompt to abort.${RESET}\n"
+
+    if ! command -v named &> /dev/null; then
+        log_warn "BIND9 is not installed. Installing now..."
+        install_bind9 || return 1
+    fi
+
+    if [ ! -f "$NAMED_LOCAL_FILE" ]; then
+        log_error "named.conf.local not found at ${NAMED_LOCAL_FILE}. Is BIND9 installed correctly?"
+        return 1
+    fi
+
+    # --- Ask zone name ---
+    echo ""
+    read -p "  Enter the zone/domain name (e.g. lks.local, internal.lan, or 'c' to cancel): " zone_name
+    if is_cancel "$zone_name"; then
+        log_warn "Zone setup cancelled."
+        return 1
+    fi
+    while ! is_valid_zone_name "$zone_name"; do
+        log_error "Invalid zone name format."
+        read -p "  Enter the zone/domain name (or 'c' to cancel): " zone_name
+        if is_cancel "$zone_name"; then
+            log_warn "Zone setup cancelled."
+            return 1
+        fi
+    done
+
+    # --- Check if zone already registered ---
+    if grep -q "zone \"${zone_name}\"" "$NAMED_LOCAL_FILE" 2>/dev/null; then
+        log_warn "Zone '${zone_name}' already exists in ${NAMED_LOCAL_FILE}."
+        read -p "  Overwrite its zone file entries? [y/N/c]: " overwrite
+        if is_cancel "$overwrite"; then
+            log_warn "Zone setup cancelled."
+            return 1
+        elif [[ ! "$overwrite" =~ ^(y|Y|yes|Yes)$ ]]; then
+            log_info "Aborted. No changes made."
+            return 0
+        fi
+    fi
+
+    # --- Ask primary server hostname & IP ---
+    read -p "  Enter this server's hostname [default: ns1, or 'c' to cancel]: " host_name
+    if is_cancel "$host_name"; then
+        log_warn "Zone setup cancelled."
+        return 1
+    fi
+    [ -z "$host_name" ] && host_name="ns1"
+
+    read -p "  Enter this server's LAN IP (e.g. 192.168.10.1, or 'c' to cancel): " server_ip
+    if is_cancel "$server_ip"; then
+        log_warn "Zone setup cancelled."
+        return 1
+    fi
+    while ! is_valid_ipv4 "$server_ip"; do
+        log_error "Invalid IPv4 address."
+        read -p "  Enter this server's LAN IP (or 'c' to cancel): " server_ip
+        if is_cancel "$server_ip"; then
+            log_warn "Zone setup cancelled."
+            return 1
+        fi
+    done
+
+    read -p "  Enter admin email for SOA [default: admin@${zone_name}, or 'c' to cancel]: " admin_email
+    if is_cancel "$admin_email"; then
+        log_warn "Zone setup cancelled."
+        return 1
+    fi
+    [ -z "$admin_email" ] && admin_email="admin.${zone_name}"
+    # SOA format wants first dot instead of @
+    admin_email_soa="${admin_email/@/.}"
+
+    local zone_file="${ZONES_DB_DIR}/db.${zone_name}"
+    local serial
+    serial="$(date +%Y%m%d)01"
+
+    mkdir -p "$ZONES_DB_DIR"
+
+    # --- Register zone in named.conf.local ---
+    backup_file "$NAMED_LOCAL_FILE"
+
+    # Remove any pre-existing block for this zone before re-adding
+    if command -v python3 &> /dev/null; then
+        python3 - "$NAMED_LOCAL_FILE" "$zone_name" <<'PYEOF'
+import re, sys
+path, zone = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    content = f.read()
+pattern = re.compile(r'zone\s+"' + re.escape(zone) + r'"\s*\{.*?\};\s*', re.DOTALL)
+content = pattern.sub('', content)
+with open(path, 'w') as f:
+    f.write(content)
+PYEOF
+    fi
+
+    cat <<EOF >> "$NAMED_LOCAL_FILE"
+
+// LAN zone: ${zone_name} - added by dns-setup.sh
+zone "${zone_name}" {
+    type master;
+    file "${zone_file}";
+    allow-update { none; };
+};
+EOF
+
+    log_success "Registered zone '${zone_name}' in ${NAMED_LOCAL_FILE}."
+
+    # --- Optionally set up reverse zone ---
+    read -p "  Also set up a reverse (PTR) zone for this subnet? [y/N/c]: " want_reverse
+    if is_cancel "$want_reverse"; then
+        log_warn "Reverse zone skipped/cancelled."
+        want_reverse="n"
+    fi
+    local reverse_zone="" reverse_file="" octets subnet_prefix
+    if [[ "$want_reverse" =~ ^(y|Y|yes|Yes)$ ]]; then
+        IFS='.' read -r o1 o2 o3 o4 <<< "$server_ip"
+        reverse_zone="${o3}.${o2}.${o1}.in-addr.arpa"
+        reverse_file="${ZONES_DB_DIR}/db.${o1}.${o2}.${o3}"
+
+        cat <<EOF >> "$NAMED_LOCAL_FILE"
+
+// Reverse zone for ${o1}.${o2}.${o3}.0/24 - added by dns-setup.sh
+zone "${reverse_zone}" {
+    type master;
+    file "${reverse_file}";
+    allow-update { none; };
+};
+EOF
+        log_success "Registered reverse zone '${reverse_zone}'."
+    fi
+
+    # --- Build forward zone db file ---
+    cat <<EOF > "$zone_file"
+\$TTL    604800
+@       IN      SOA     ${host_name}.${zone_name}. ${admin_email_soa}. (
+                         ${serial}     ; Serial
+                         3600          ; Refresh
+                         900           ; Retry
+                         604800        ; Expire
+                         86400 )       ; Negative Cache TTL
+;
+@       IN      NS      ${host_name}.${zone_name}.
+${host_name}    IN      A       ${server_ip}
+EOF
+
+    log_success "Created zone file ${zone_file}."
+
+    # --- Loop: add A records for other local hosts ---
+    echo ""
+    echo -e "${BOLD}  Add additional host A records for this zone (e.g. web-01, mail-srv)${RESET}"
+    echo "  Press Enter with empty hostname or 'c' to finish."
+    while true; do
+        read -p "  Hostname (e.g. web-01) [Enter to finish, or 'c' to stop]: " rec_host
+        if [ -z "$rec_host" ] || is_cancel "$rec_host"; then break; fi
+        read -p "  IP address for ${rec_host}.${zone_name} (or 'c' to cancel this record): " rec_ip
+        if is_cancel "$rec_ip"; then
+            log_warn "Record cancelled."
+            continue
+        fi
+        while ! is_valid_ipv4 "$rec_ip"; do
+            log_error "Invalid IPv4 address."
+            read -p "  IP address for ${rec_host}.${zone_name} (or 'c' to cancel this record): " rec_ip
+            if is_cancel "$rec_ip"; then break; fi
+        done
+        if is_cancel "$rec_ip"; then
+            log_warn "Record cancelled."
+            continue
+        fi
+        echo "${rec_host}    IN      A       ${rec_ip}" >> "$zone_file"
+        log_success "Added A record: ${rec_host}.${zone_name} -> ${rec_ip}"
+
+        if [ -n "$reverse_file" ]; then
+            IFS='.' read -r _ _ _ last_octet <<< "$rec_ip"
+            echo "${last_octet}    IN      PTR     ${rec_host}.${zone_name}." >> "${reverse_file}.tmp_ptr"
+        fi
+    done
+
+    # --- Build reverse zone db file (if requested) ---
+    if [ -n "$reverse_file" ]; then
+        local rev_serial="$serial"
+        {
+            echo "\$TTL    604800"
+            echo "@       IN      SOA     ${host_name}.${zone_name}. ${admin_email_soa}. ("
+            echo "                         ${rev_serial}     ; Serial"
+            echo "                         3600          ; Refresh"
+            echo "                         900           ; Retry"
+            echo "                         604800        ; Expire"
+            echo "                         86400 )       ; Negative Cache TTL"
+            echo ";"
+            echo "@       IN      NS      ${host_name}.${zone_name}."
+            IFS='.' read -r _ _ _ last_octet <<< "$server_ip"
+            echo "${last_octet}    IN      PTR     ${host_name}.${zone_name}."
+            [ -f "${reverse_file}.tmp_ptr" ] && cat "${reverse_file}.tmp_ptr" && rm -f "${reverse_file}.tmp_ptr"
+        } > "$reverse_file"
+        log_success "Created reverse zone file ${reverse_file}."
+    fi
+
+    # --- Validate & reload ---
+    log_info "Validating BIND9 configuration with named-checkconf..."
+    if command -v named-checkconf &> /dev/null; then
+        if ! named-checkconf; then
+            log_error "BIND9 configuration validation failed! Check ${NAMED_LOCAL_FILE} and ${zone_file} manually."
+            return 1
+        fi
+        log_success "Configuration syntax verified successfully."
+    fi
+
+    if command -v named-checkzone &> /dev/null; then
+        named-checkzone "$zone_name" "$zone_file" &> /dev/null && \
+            log_success "Zone file syntax OK." || \
+            log_warn "named-checkzone reported issues with ${zone_file}."
+    fi
+
+    log_info "Reloading ${BIND_SERVICE}..."
+    systemctl reload "$BIND_SERVICE" 2>/dev/null || systemctl restart "$BIND_SERVICE"
+
+    if systemctl is-active --quiet "$BIND_SERVICE"; then
+        log_success "Local zone '${zone_name}' is now active on ${DNS_PROVIDER_NAME:-BIND9}."
+    else
+        log_error "BIND9 failed to reload/restart. Run 'journalctl -u ${BIND_SERVICE} -n 30' for details."
+        return 1
+    fi
+}
+
 # ----------------------------- Main Entry Point -------------------------------
 
-detect_environment
+main() {
+    detect_environment
 
-# Parse command line flags if provided
-if [ "$1" = "--internet-resolve" ]; then
-    print_banner
-    configure_internet_resolve_mode
-    exit 0
-elif [ "$1" = "--status" ]; then
-    print_banner
-    show_service_status
-    exit 0
-elif [ "$1" = "--test" ]; then
-    print_banner
-    test_dns_resolution
-    exit 0
-elif [ "$1" = "--rollback" ]; then
-    print_banner
-    rollback_config
-    exit 0
-fi
+    # Parse command line flags if provided
+    if [ "$1" = "--internet-resolve" ]; then
+        print_banner
+        configure_internet_resolve_mode
+        exit 0
+    elif [ "$1" = "--status" ]; then
+        print_banner
+        show_service_status
+        exit 0
+    elif [ "$1" = "--test" ]; then
+        print_banner
+        test_dns_resolution
+        exit 0
+    elif [ "$1" = "--rollback" ]; then
+        print_banner
+        rollback_config
+        exit 0
+    elif [ "$1" = "--local-zone" ]; then
+        print_banner
+        setup_local_zone_bind9
+        exit 0
+    elif [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+        print_banner
+        echo "Usage: $0 [OPTION]"
+        echo ""
+        echo "Options:"
+        echo "  --internet-resolve   Configure Internet Resolve-Only forwarder"
+        echo "  --local-zone         Configure Local LAN DNS Zone (BIND9)"
+        echo "  --status             View DNS services status & port 53 listeners"
+        echo "  --test               Test local DNS resolution"
+        echo "  --rollback           Restore previous DNS configuration"
+        echo "  -h, --help           Display this help message"
+        exit 0
+    fi
 
-# Interactive Menu Loop
-while true; do
-    clear 2>/dev/null || true
-    print_banner
-    print_separator
-    echo -e "${BOLD}  Available Actions:${RESET}"
-    echo "    1) Install DNSMASQ"
-    echo "    2) Install BIND9"
-    echo "    3) Configure Internet Resolve-Only Mode (Forwarder)"
-    echo "    4) Test Local DNS Resolution (127.0.0.1)"
-    echo "    5) View DNS Services Status & Port 53 Listeners"
-    echo "    6) Restore / Rollback Configuration"
-    echo "    7) Show BIND9 Status"
-    echo "    8) Show DNSMASQ Status"
-    echo "    0) Exit"
-    print_separator
+    # Interactive Menu Loop
+    while true; do
+        clear 2>/dev/null || true
+        print_banner
+        print_separator
+        echo -e "${BOLD}  Available Actions:${RESET}"
+        echo "    1) Install DNSMASQ"
+        echo "    2) Install BIND9"
+        echo "    3) Configure Internet Resolve-Only Mode (Forwarder)"
+        echo "    4) Test Local DNS Resolution (127.0.0.1)"
+        echo "    5) View DNS Services Status & Port 53 Listeners"
+        echo "    6) Restore / Rollback Configuration"
+        echo "    7) Show BIND9 Status"
+        echo "    8) Show DNSMASQ Status"
+        echo "    9) Setup Local LAN Zone (BIND9)"
+        echo "    0) Exit / Cancel"
+        print_separator
 
-    read -p "  Choose an option [0-8]: " option
+        read -p "  Choose an option [0-9, or 'c' to exit]: " option
 
-    case "$option" in
-        1)
-            print_separator
-            install_dnsmasq
-            ;;
-        2)
-            print_separator
-            install_bind9
-            ;;
-        3)
-            configure_internet_resolve_mode
-            ;;
-        4)
-            test_dns_resolution
-            ;;
-        5)
-            show_service_status
-            ;;
-        6)
-            rollback_config
-            ;;
-        7)
-            bind9_status
-            ;;
-        8)
-            dnsmasq_status
-            ;;
-        0|q|Q|exit)
+        case "$option" in
+            1)
+                print_separator
+                install_dnsmasq
+                ;;
+            2)
+                print_separator
+                install_bind9
+                ;;
+            3)
+                configure_internet_resolve_mode
+                ;;
+            4)
+                test_dns_resolution
+                ;;
+            5)
+                show_service_status
+                ;;
+            6)
+                rollback_config
+                ;;
+            7)
+                bind9_status
+                ;;
+            8)
+                dnsmasq_status
+                ;;
+            9)
+                setup_local_zone_bind9
+                ;;
+            0|c|C|cancel|CANCEL|q|Q|quit|QUIT|exit|EXIT)
+                echo ""
+                log_info "Exiting DNS Setup Tool. Goodbye!"
+                exit 0
+                ;;
+            *)
+                log_error "Invalid option: ${option}"
+                ;;
+        esac
+
+        echo ""
+        read -p "  Press [Enter] to continue (or 'c' to exit)..." cont_choice
+        if is_cancel "$cont_choice"; then
             echo ""
-            log_info "Exiting DNS Setup Tool."
+            log_info "Exiting DNS Setup Tool. Goodbye!"
             exit 0
-            ;;
-        *)
-            log_error "Invalid option: ${option}"
-            ;;
-    esac
+        fi
+    done
+}
 
-    echo ""
-    read -p "  Press [Enter] to continue..." _
-done
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
