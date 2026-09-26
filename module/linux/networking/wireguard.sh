@@ -257,7 +257,7 @@ configure_wireguard() {
         if is_interface_active "$IFACE"; then
             log_warn "Interface '$IFACE' is currently UP. Address/ListenPort changes need a full"
             log_warn "restart to take effect - 'wg syncconf' does NOT apply these, only [Peer]"
-            log_warn "changes. Bring it down and up again after saving (menu option 6)."
+            log_warn "changes. Bring it down and up again after saving (menu option 7)."
         fi
     fi
 
@@ -456,6 +456,249 @@ suggest_next_ip() {
         fi
     done
     return 1
+}
+
+# Generates a complete, ready-to-import [Interface]+[Peer] .conf file for a
+# NEW client, meant to be run ON THE SERVER. This does not touch the
+# server's own wg0.conf - it only writes a separate client file (and,
+# optionally, a QR code) that you hand to the client device. It is purely
+# additive: it does not replace add_peer(), which is still how the new
+# client's public key gets registered on the server side.
+generate_client_config() {
+    log_info "Generate Client Config"
+    print_separator
+    echo -e "  ${DIM}This builds a ready-to-import .conf file FOR a new client (phone,"
+    echo -e "  laptop, etc) - run this ON THE SERVER. It does NOT modify this"
+    echo -e "  server's own wg0.conf; you still add the client as a peer separately"
+    echo -e "  (option 4) so the server accepts its connection.${RESET}"
+    print_separator
+
+    read -rp "  Server's Interface Name (the one clients connect to) [default: wg0, or 'c' to cancel]: " SRV_IFACE
+    if is_cancel "$SRV_IFACE"; then
+        log_warn "Cancelled."
+        return 1
+    fi
+    SRV_IFACE=${SRV_IFACE:-wg0}
+    if ! is_valid_iface_name "$SRV_IFACE"; then
+        log_error "Invalid interface name. Use letters, numbers, '-' or '_' only (max 15 chars)."
+        return 1
+    fi
+
+    local SRV_CONF="/etc/wireguard/${SRV_IFACE}.conf"
+    if [ ! -f "$SRV_CONF" ]; then
+        log_error "No config found at $SRV_CONF - create the server interface first (option 3)."
+        return 1
+    fi
+
+    # --- Server's own public key, needed for the client's [Peer] section ---
+    local SRV_PRIVKEY SRV_PUBKEY SRV_ADDR
+    SRV_PRIVKEY=$(grep -i "^\s*PrivateKey" "$SRV_CONF" | head -1 | cut -d'=' -f2- | xargs)
+    SRV_ADDR=$(grep -i "^\s*Address" "$SRV_CONF" | head -1 | cut -d'=' -f2- | xargs)
+    if [ -z "$SRV_PRIVKEY" ] || ! is_valid_wg_key "$(echo "$SRV_PRIVKEY" | wg pubkey 2>/dev/null)" 2>/dev/null; then
+        SRV_PUBKEY=""
+    else
+        SRV_PUBKEY=$(echo "$SRV_PRIVKEY" | wg pubkey 2>/dev/null)
+    fi
+    if [ -z "$SRV_PUBKEY" ]; then
+        log_error "Could not derive this server's public key from $SRV_CONF (missing or invalid PrivateKey)."
+        return 1
+    fi
+    log_info "Server Public Key (will be embedded in the client file): $SRV_PUBKEY"
+
+    # --- Client identity: a friendly name, purely for the filename ---
+    read -rp "  Client name (used for the filename, e.g. 'android-phone') [or 'c' to cancel]: " CLIENT_NAME
+    is_cancel "$CLIENT_NAME" && { log_warn "Cancelled."; return 1; }
+    if [ -z "$CLIENT_NAME" ]; then
+        log_error "Client name cannot be empty."
+        return 1
+    fi
+    if ! [[ "$CLIENT_NAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
+        log_error "Use letters, numbers, '-' or '_' only (max 32 chars)."
+        return 1
+    fi
+
+    local OUT_DIR="/etc/wireguard/clients"
+    mkdir -p "$OUT_DIR"
+    chmod 700 "$OUT_DIR"
+    local OUT_CONF="${OUT_DIR}/${CLIENT_NAME}.conf"
+    if [ -f "$OUT_CONF" ]; then
+        log_warn "A client file named '${CLIENT_NAME}.conf' already exists at $OUT_CONF."
+        read -rp "  Overwrite it? [y/N]: " OVERWRITE_CLIENT
+        if [[ ! "$OVERWRITE_CLIENT" =~ ^[Yy]$ ]]; then
+            log_info "Cancelled - no changes made."
+            return 0
+        fi
+    fi
+
+    # --- Client's own keypair: always generated fresh here, never reused ---
+    echo -e "  ${DIM}A brand-new keypair is generated for this client - never reuse a keypair"
+    echo -e "  across two devices.${RESET}"
+    local CLIENT_PRIVKEY CLIENT_PUBKEY
+    CLIENT_PRIVKEY=$(wg genkey)
+    if [ -z "$CLIENT_PRIVKEY" ]; then
+        log_error "wg genkey failed to produce a private key (is the wireguard kernel module loaded?)."
+        return 1
+    fi
+    CLIENT_PUBKEY=$(echo "$CLIENT_PRIVKEY" | wg pubkey 2>/dev/null)
+    if [ -z "$CLIENT_PUBKEY" ]; then
+        log_error "wg pubkey failed to derive a public key for this client."
+        return 1
+    fi
+
+    # --- Client's tunnel IP: auto-suggested from the server's subnet, same
+    #     logic add_peer() uses, so the two never collide with each other. ---
+    local CLIENT_ADDR DEFAULT_CLIENT_IP=""
+    if [ -n "$SRV_ADDR" ] && is_valid_cidr "$SRV_ADDR"; then
+        local USED_IPS=() SUGGESTED_IP
+        USED_IPS+=("${SRV_ADDR%%/*}")
+        while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            USED_IPS+=("${line%%/*}")
+        done < <(grep -i "^\s*AllowedIPs" "$SRV_CONF" | cut -d'=' -f2- | tr ',' '\n' | xargs -n1 2>/dev/null | grep -E '/32$')
+        if SUGGESTED_IP=$(suggest_next_ip "$SRV_ADDR" "${USED_IPS[@]}"); then
+            DEFAULT_CLIENT_IP="${SUGGESTED_IP}/32"
+            log_info "Suggested next free IP in ${SRV_ADDR}'s subnet: $DEFAULT_CLIENT_IP"
+        fi
+    fi
+    echo -e "  ${DIM}This client's own tunnel IP (its Address=, not AllowedIPs) - must be"
+    echo -e "  unique, unused by the server or any other client on this subnet.${RESET}"
+    while true; do
+        if [ -n "$DEFAULT_CLIENT_IP" ]; then
+            read -rp "  Client tunnel IP [default: $DEFAULT_CLIENT_IP]: " CLIENT_ADDR
+            CLIENT_ADDR=${CLIENT_ADDR:-$DEFAULT_CLIENT_IP}
+        else
+            read -rp "  Client tunnel IP (e.g. 10.10.10.3/32): " CLIENT_ADDR
+        fi
+        is_cancel "$CLIENT_ADDR" && { log_warn "Cancelled."; return 1; }
+        if is_valid_cidr "$CLIENT_ADDR"; then
+            break
+        fi
+        log_error "Invalid format. Expected an IPv4 CIDR, e.g. 10.10.10.3/32."
+    done
+
+    # --- Endpoint: how the client reaches this server ---
+    echo -e "  ${BOLD}What is 'Endpoint'?${RESET}"
+    echo -e "  ${DIM}The server's REAL network address - how the client reaches it BEFORE"
+    echo -e "  the tunnel exists (its LAN IP if the client is on the same local network,"
+    echo -e "  its public IP or a DDNS hostname if the client connects over the"
+    echo -e "  internet). Never the tunnel IP - that only works after the handshake.${RESET}"
+    local ENDPOINT
+    while true; do
+        read -rp "  Server Endpoint (host_or_ip:port, e.g. 192.168.1.50:51820): " ENDPOINT
+        is_cancel "$ENDPOINT" && { log_warn "Cancelled."; return 1; }
+        if is_valid_endpoint "$ENDPOINT"; then
+            break
+        fi
+        log_error "Invalid format. Expected host_or_ip:port with a valid port (1-65535)."
+    done
+
+    # --- AllowedIPs on the CLIENT side (what gets routed into the tunnel) ---
+    echo -e "  ${DIM}Full-tunnel (0.0.0.0/0) sends ALL of the client's traffic through this"
+    echo -e "  server, internet included. Split-tunnel routes only specific subnets -"
+    echo -e "  e.g. just this VPN's own subnet, if you only need to reach machines"
+    echo -e "  behind this server rather than replace the client's normal internet.${RESET}"
+    local CLIENT_ALLOWED
+    while true; do
+        read -rp "  AllowedIPs for this client [default: 0.0.0.0/0]: " CLIENT_ALLOWED
+        CLIENT_ALLOWED=${CLIENT_ALLOWED:-0.0.0.0/0}
+        is_cancel "$CLIENT_ALLOWED" && { log_warn "Cancelled."; return 1; }
+        if is_valid_allowed_ips "$CLIENT_ALLOWED"; then
+            break
+        fi
+        log_error "Invalid format. Expected one or more comma-separated IPv4 CIDRs."
+    done
+
+    # --- Optional DNS ---
+    echo -e "  ${DIM}Optional: which DNS resolver the client should use while the tunnel is"
+    echo -e "  up. Leave blank to keep the client's own DNS untouched.${RESET}"
+    local CLIENT_DNS
+    read -rp "  DNS for this client [blank to skip]: " CLIENT_DNS
+    if [ -n "$CLIENT_DNS" ] && ! is_valid_cidr "${CLIENT_DNS}/32"; then
+        log_warn "'$CLIENT_DNS' doesn't look like a plain IPv4 address - omitting DNS line."
+        CLIENT_DNS=""
+    fi
+
+    # --- Keepalive ---
+    echo -e "  ${DIM}Recommended if this client will be behind NAT (almost always true for"
+    echo -e "  phones and home routers) - keeps the connection from going idle-silent.${RESET}"
+    local CLIENT_KEEPALIVE
+    read -rp "  PersistentKeepalive in seconds [default: 25, blank to omit]: " CLIENT_KEEPALIVE
+    if [ -n "$CLIENT_KEEPALIVE" ] && ! [[ "$CLIENT_KEEPALIVE" =~ ^[0-9]+$ ]]; then
+        log_warn "'$CLIENT_KEEPALIVE' is not a number - omitting PersistentKeepalive."
+        CLIENT_KEEPALIVE=""
+    fi
+    [ -z "$CLIENT_KEEPALIVE" ] && CLIENT_KEEPALIVE="25"
+
+    # --- Summary before writing anything ---
+    print_separator
+    echo -e "  ${BOLD}About to write $OUT_CONF:${RESET}"
+    echo "    [Interface]"
+    echo "    PrivateKey = <client's new private key, hidden>"
+    echo "    Address = $CLIENT_ADDR"
+    [ -n "$CLIENT_DNS" ] && echo "    DNS = $CLIENT_DNS"
+    echo "    [Peer]"
+    echo "    PublicKey = $SRV_PUBKEY"
+    echo "    Endpoint = $ENDPOINT"
+    echo "    AllowedIPs = $CLIENT_ALLOWED"
+    [ -n "$CLIENT_KEEPALIVE" ] && echo "    PersistentKeepalive = $CLIENT_KEEPALIVE"
+    print_separator
+    read -rp "  Write this file? [Y/n]: " CONFIRM_WRITE
+    if [[ "$CONFIRM_WRITE" =~ ^[Nn]$ ]]; then
+        log_info "Cancelled - nothing written."
+        return 0
+    fi
+
+    {
+        echo "[Interface]"
+        echo "PrivateKey = $CLIENT_PRIVKEY"
+        echo "Address = $CLIENT_ADDR"
+        [ -n "$CLIENT_DNS" ] && echo "DNS = $CLIENT_DNS"
+        echo ""
+        echo "[Peer]"
+        echo "PublicKey = $SRV_PUBKEY"
+        echo "Endpoint = $ENDPOINT"
+        echo "AllowedIPs = $CLIENT_ALLOWED"
+        [ -n "$CLIENT_KEEPALIVE" ] && echo "PersistentKeepalive = $CLIENT_KEEPALIVE"
+    } > "$OUT_CONF"
+    chmod 600 "$OUT_CONF"
+    log_success "Client config written to: $OUT_CONF"
+
+    print_separator
+    echo -e "  ${BOLD}This client's Public Key (needed to register it on the server):${RESET}"
+    echo "    $CLIENT_PUBKEY"
+    print_separator
+
+    # --- Optional: show a QR code for mobile apps (Android/iOS WireGuard) ---
+    if command -v qrencode &> /dev/null; then
+        read -rp "  Show this as a QR code to scan on a phone? [Y/n]: " SHOW_QR
+        if [[ ! "$SHOW_QR" =~ ^[Nn]$ ]]; then
+            qrencode -t ansiutf8 < "$OUT_CONF"
+            log_warn "This QR code encodes the client's PRIVATE key - treat it like a password."
+        fi
+    else
+        log_info "Tip: install 'qrencode' (e.g. apt install qrencode) to also get a scannable"
+        log_info "QR code here for the WireGuard mobile app instead of transferring this file."
+    fi
+
+    # BUG FOUND DURING TESTING: calling add_peer() directly here to "chain"
+    # straight into registration seemed convenient, but add_peer() always
+    # asks for the Interface Name from scratch (it has no way to inherit
+    # SRV_IFACE from this function) - in practice, whatever the operator
+    # types next gets consumed as add_peer's OWN first prompt, not as an
+    # answer this function already knew. That silently misaligns every
+    # subsequent prompt. Rather than reach into add_peer() to special-case
+    # this (which the brief asked not to touch), this just hands the
+    # operator everything needed to run option 4 themselves right after -
+    # copy-pasting the printed public key is one extra step, but never
+    # produces a misaligned prompt sequence like the chained call did.
+    print_separator
+    echo -e "  ${BOLD}Next step - register this client on the server (option 4):${RESET}"
+    echo "    Interface:    $SRV_IFACE"
+    echo "    Role:         1 (THIS machine is the SERVER)"
+    echo "    Public Key:   $CLIENT_PUBKEY"
+    echo "    AllowedIPs:   $CLIENT_ADDR"
+    print_separator
+    log_info "The client won't be able to connect until that's done."
 }
 
 # Adds a [Peer] block to an existing interface config. Works for both
@@ -686,10 +929,10 @@ add_peer() {
             if wg syncconf "$IFACE" <(wg-quick strip "$IFACE") 2>/dev/null; then
                 log_success "Peer applied live via 'wg syncconf' - no downtime."
             else
-                log_error "'wg syncconf' failed. Bring the interface down/up manually (menu option 6) to apply it."
+                log_error "'wg syncconf' failed. Bring the interface down/up manually (menu option 7) to apply it."
             fi
         else
-            log_info "Remember to bring '$IFACE' down and up again (menu option 6) to apply the new peer."
+            log_info "Remember to bring '$IFACE' down and up again (menu option 7) to apply the new peer."
         fi
     fi
 }
@@ -767,19 +1010,23 @@ main_menu() {
         echo -e "  ${BOLD}2.${RESET} Generate Keys (Private & Public Key)"
         echo -e "  ${BOLD}3.${RESET} Create / Edit Interface Configuration"
         echo -e "  ${BOLD}4.${RESET} Add Peer (client or server)"
-        echo -e "  ${BOLD}5.${RESET} Check Status & Configuration"
-        echo -e "  ${BOLD}6.${RESET} Bring Up / Down WireGuard Interface"
+        echo -e "  ${BOLD}5.${RESET} Generate Client Config (ready-to-import .conf + QR)"
+        echo -e "  ${BOLD}6.${RESET} Check Status & Configuration"
+        echo -e "  ${BOLD}7.${RESET} Bring Up / Down WireGuard Interface"
         echo -e "  ${BOLD}0.${RESET} Exit"
         print_separator
         echo -e "  ${DIM}First time setting up a tunnel? Run these on EACH machine (server AND"
-        echo -e "  every client), in order: 1 -> 2 -> 3 -> 4 -> 6. Each machine generates its"
+        echo -e "  every client), in order: 1 -> 2 -> 3 -> 4 -> 7. Each machine generates its"
         echo -e "  own keypair in step 2 - never copy a private key between machines."
+        echo -e "  Adding a phone or laptop as a client? Run option 5 ON THE SERVER instead"
+        echo -e "  of steps 2-4 on that device - it builds the client's .conf (and QR code)"
+        echo -e "  for you in one go."
         echo -e "  To enable internet access trough wireguard vpn, you need to enable "
         echo -e "  nat and ip forwarding in the vpn server side and you can do that by using nat.sh script"
         echo -e "   ${YELLOW}(you need to run it on the vpn server side)${RESET}"
         print_separator
 
-        read -rp "  Select Option [0-6]: " OPT
+        read -rp "  Select Option [0-7]: " OPT
 
         # BUG FIX: unquoted `case $OPT in` - quoted for consistency, same
         # class of issue as the one fixed in toggle_interface.
@@ -797,9 +1044,12 @@ main_menu() {
                 add_peer
                 ;;
             5)
-                check_status
+                generate_client_config
                 ;;
             6)
+                check_status
+                ;;
+            7)
                 toggle_interface
                 ;;
             0)
