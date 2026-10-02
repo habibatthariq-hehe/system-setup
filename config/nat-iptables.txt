@@ -1,0 +1,4 @@
+sudo apt install iptables iptables-persistent
+sudo iptables -t nat -A POSTROUTING -o <interface_wan> -j MASQUERADE
+sudo iptables -A FORWARD -i <interface_lan> -o <interface_wan> -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+sudo iptables -A FORWARD -i <interface_lan> -o <interface_wan> -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
