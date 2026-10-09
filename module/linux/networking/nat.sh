@@ -423,7 +423,9 @@ check_no_overlap() {
     return 0
 }
 
-# ----------------------------- IP forwarding ----------------------------------
+# ------------------------------------------------------------------------------#
+# ----------------------------- IP forwarding ----------------------------------#
+#-------------------------------------------------------------------------------#
 enable_forwarding() {
     local cur
     cur=$(sysctl -n net.ipv4.ip_forward 2>/dev/null)
@@ -543,6 +545,9 @@ persist_nft() {
     return 0
 }
 
+# ------------------------------------------------------------------------------#
+# ------------------------------ PERSIST IPT ---------------------------------#
+# ------------------------------------------------------------------------------#
 persist_ipt() {
     local wan="$1" lan="$2" dmz="$3"
     local tmp_rules tmp_unit restore_bin ifc subnet l d
@@ -619,6 +624,10 @@ EOF
     fi
     return 0
 }
+
+#------------------------------#
+#     REMOVE PERSISTENCE       #
+#------------------------------#
 
 remove_persistence() {
     local removed=0
@@ -772,7 +781,10 @@ apply_nft() {
                         "$l" \
                         "$d"
 
-                    # DMZ -> LAN
+                    #------------------------------------------------------------#
+                    #                     DMZ -> LAN                             #
+                    #------------------------------------------------------------#
+
                     printf \
                         'add rule ip nat_tool forward iifname "%s" oifname "%s" drop\n' \
                         "$d" \
@@ -788,9 +800,9 @@ apply_nft() {
         return 1
     }
 
-    #
-    # Validate the generated ruleset before changing the live firewall.
-    #
+    #-------------------------------------------------------------------#
+    # Validate the generated ruleset before changing the live firewall.  #
+    #-------------------------------------------------------------------#
     if ! nft -c -f "$candidate" >/dev/null 2>&1; then
         rm -f "$candidate"
         log_error "Generated nftables rules failed validation; nothing was changed."
@@ -1104,6 +1116,10 @@ main_wizard() {
         return 1
     fi
 }
+
+# -------------------------------------------------------------#
+#                Command Line Status                           #
+#--------------------------------------------------------------#
 
 case "${1:-}" in
     --rollback) check_root; do_rollback ;;
