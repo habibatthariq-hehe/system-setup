@@ -609,9 +609,14 @@ EOF
     chmod 600 "$tmp_unit" || { rm -f "$tmp_rules" "$tmp_unit"; return 1; }
     backup_file_once "$IPT_RESTORE_FILE" || { rm -f "$tmp_rules" "$tmp_unit"; return 1; }
     backup_file_once "$IPT_UNIT_FILE" || { rm -f "$tmp_rules" "$tmp_unit"; return 1; }
-    if ! mv -f "$tmp_rules" "$IPT_RESTORE_FILE"; then rm -f "$tmp_rules" "$tmp_unit"; log_error "Could not install iptables restore file."; return 1; fi
+    if ! mv -f "$tmp_rules" "$IPT_RESTORE_FILE"; then
+        rm -f "$tmp_rules" "$tmp_unit"
+        log_error "Could not install iptables restore file."
+        return 1
+    fi
     if ! mv -f "$tmp_unit" "$IPT_UNIT_FILE"; then
-        rm -f "$tmp_unit" "$IPT_RESTORE_FILE"
+        # Only remove the tmp_unit file, not the successfully moved rules file
+        rm -f "$tmp_unit"
         log_error "Could not install iptables restore unit."
         return 1
     fi

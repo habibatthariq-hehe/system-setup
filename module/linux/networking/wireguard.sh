@@ -194,9 +194,10 @@ is_valid_wg_key() {
 }
 
 # Validates an interface name: safe to use as a bare filename component.
+# Must start with a letter per Linux interface naming requirements.
 is_valid_iface_name() {
     local val="$1"
-    [[ "$val" =~ ^[A-Za-z0-9_-]{1,15}$ ]]
+    [[ "$val" =~ ^[A-Za-z][A-Za-z0-9_-]{0,14}$ ]]
 }
 
 # Checks whether a WireGuard interface is currently up (present in `wg show`).
