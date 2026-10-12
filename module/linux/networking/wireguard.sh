@@ -45,11 +45,11 @@ check_package_manager() {
         INSTALL_CMD=(apt-get install wireguard wireguard-tools -y)
     elif command -v dnf &> /dev/null; then
         PKG_MANAGER="dnf"
-        UPDATE_CMD=(dnf check-update)
+        UPDATE_CMD=(dnf makecache)
         INSTALL_CMD=(dnf install wireguard-tools -y)
     elif command -v yum &> /dev/null; then
         PKG_MANAGER="yum"
-        UPDATE_CMD=(yum check-update)
+        UPDATE_CMD=(yum makecache)
         INSTALL_CMD=(yum install wireguard-tools -y)
     else
         log_error "No supported package manager (apt, dnf, yum) found."
@@ -1844,6 +1844,79 @@ toggle_interface() {
             ;;
     esac
 }
+show_interfaces() {
+    log_info "Showing Network Interfaces"
+    print_separator
+
+    # Get list of interfaces from `ip -brief link`
+    local ifaces
+    ifaces=$(ip -brief link show | awk '{print $1}') || {
+        log_error "Failed to get interface list."
+        return 1
+    }
+
+    for iface in $ifaces; do
+        # Get the state line for this interface
+        local state_line
+        state_line=$(ip -brief link show dev "$iface") || continue
+        local iface_name=$(echo "$state_line" | awk '{print $1}')
+        local state=$(echo "$state_line" | awk '{print $2}')
+        local flags=$(echo "$state_line" | awk '{print $3}')
+
+        # Get IP addresses
+        local ip_info
+        ip_info=$(ip addr show dev "$iface") || continue
+
+        local mac
+        mac=$(echo "$ip_info" | awk '/link\/ether/ {print $2}')
+
+        local ipv4
+        ipv4=$(echo "$ip_info" | awk '/inet / {print $2}' | head -1)
+
+        local ipv6
+        ipv6=$(echo "$ip_info" | awk '/inet6 / {print $2}' | head -1)
+
+        local mtu
+        mtu=$(echo "$ip_info" | awk '/mtu/ {print $5}')
+
+        local qlen
+        qlen=$(echo "$ip_info" | awk '/qlen/ {print $5}')
+
+        # Determine interface type
+        local type="Unknown"
+        if [[ "$iface_name" =~ ^lo$ ]]; then
+            type="Loopback"
+        elif [[ "$iface_name" =~ ^(eth|enp|ens|eno|enx) ]]; then
+            type="Ethernet"
+        elif [[ "$iface_name" =~ ^(wl|wlan) ]]; then
+            type="Wireless"
+        elif [[ "$iface_name" =~ ^(veth|docker|br|virb|vnet) ]]; then
+            type="Virtual"
+        elif [[ "$iface_name" =~ ^(wg) ]]; then
+            type="WireGuard"
+        elif [[ "$iface_name" =~ ^(tun|tap) ]]; then
+            type="VPN/Tunnel"
+        elif [[ "$iface_name" =~ ^(bond) ]]; then
+            type="Bond"
+        elif [[ "$iface_name" =~ ^(vlan) ]]; then
+            type="VLAN"
+        fi
+
+        echo -e "Interface: $iface_name"
+        echo -e "  State: $state"
+        echo -e "  Type: $type"
+        echo -e "  MAC: $mac"
+        echo -e "  IPv4: $ipv4"
+        echo -e "  IPv6: $ipv6"
+        echo -e "  MTU: $mtu"
+        echo -e "  QLen: $qlen"
+        echo -e "  Flags: $flags"
+        echo ""
+    done
+
+    print_separator
+}
+
 #----------------------------------------------#
 #-------------------Main Menu------------------#
 #----------------------------------------------#
@@ -1861,6 +1934,7 @@ main_menu() {
         echo -e "  ${BOLD}6.${RESET} Check Status & Configuration"
         echo -e "  ${BOLD}7.${RESET} Bring Up / Down WireGuard Interface"
         echo -e "  ${BOLD}8.${RESET} Edit / Remove Peer"
+        echo -e "  ${BOLD}9.${RESET} Show Network Interfaces"
         echo -e "  ${BOLD}0.${RESET} Exit"
         print_separator
         echo -e "  ${CYAN}${BOLD}QUICK GUIDE & WORKFLOW:${RESET}"
@@ -1875,7 +1949,7 @@ main_menu() {
         echo -e "    Run ${YELLOW}${BOLD}nat.sh${RESET} on the server to enable NAT & IPv4 forwarding"
         print_separator
 
-        read -rp "  Select Option [0-8]: " OPT
+        read -rp "  Select Option [0-9]: " OPT
 
         # BUG FIX: unquoted `case $OPT in` - quoted for consistency, same
         # class of issue as the one fixed in toggle_interface.
@@ -1903,6 +1977,9 @@ main_menu() {
                 ;;
             8)
                 edit_peer
+                ;;
+            9)
+                show_interfaces
                 ;;
             0)
                 log_info "Exiting script. Goodbye!"
